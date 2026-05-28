@@ -126,7 +126,7 @@ function getNextCallerReply(scenarioId, conversationLog) {
     contents.unshift({ role: 'user', parts: [{ text: '（応対者が応答します）' }] });
   }
 
-  var reply = callGeminiAPI(contents, systemPrompt);
+  var reply = callGeminiAPI(contents, systemPrompt, { temperature: 0.9, maxOutputTokens: 512 });
   reply = (reply || '').trim();
 
   var ended = isCallEnded(reply);
@@ -148,7 +148,11 @@ function scoreRoleplay(scenarioId, conversationLog) {
   var prompt = buildScoringPrompt(scenario, conversationLog || []);
   var contents = [{ role: 'user', parts: [{ text: prompt }] }];
 
-  var raw = callGeminiAPI(contents, null);
+  var raw = callGeminiAPI(contents, null, {
+    temperature: 0.4,
+    maxOutputTokens: 2048,
+    responseMimeType: 'application/json'
+  });
   var result = parseScoringJson(raw);
 
   // 任意: ログ記録（SPREADSHEET_ID 未設定なら何もしない）
@@ -171,18 +175,26 @@ function scoreRoleplay(scenarioId, conversationLog) {
  * @param {string|null} systemPrompt - システムプロンプト（不要なら null）
  * @return {string} モデルが生成したテキスト
  */
-function callGeminiAPI(contents, systemPrompt) {
+function callGeminiAPI(contents, systemPrompt, options) {
+  options = options || {};
   var apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
   if (!apiKey) {
     throw new Error('スクリプトプロパティ GEMINI_API_KEY が設定されていません。');
   }
 
+  var genConfig = {
+    temperature: (options.temperature != null ? options.temperature : 0.8),
+    maxOutputTokens: options.maxOutputTokens || 1024,
+    // 2.5系は既定で「思考」に出力トークンを消費するため無効化（高速化＆出力確保）
+    thinkingConfig: { thinkingBudget: 0 }
+  };
+  if (options.responseMimeType) {
+    genConfig.responseMimeType = options.responseMimeType;
+  }
+
   var payload = {
     contents: contents,
-    generationConfig: {
-      temperature: 0.8,
-      maxOutputTokens: 1024
-    }
+    generationConfig: genConfig
   };
   if (systemPrompt) {
     payload.systemInstruction = { parts: [{ text: systemPrompt }] };

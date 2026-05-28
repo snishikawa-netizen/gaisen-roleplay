@@ -392,6 +392,8 @@
     var ttsMode = 'cloud';         // 'cloud'(Gemini) | 'local'(端末)
     var cloudVoice = 'Kore';       // Gemini のプリセットボイス
     var currentAudio = null;       // 再生中の音声(Audio要素)
+    var finalTranscript = '';      // 確定した認識テキストの蓄積
+    var silenceTimer = null;       // 無音検出タイマー（ハンズフリー自動送信用）
 
     // Gemini のプリセットボイス（自然・端末非依存）
     var GEMINI_VOICES = [
@@ -814,27 +816,27 @@
         recognition = new SR();
         recognition.lang = 'ja-JP';
         recognition.interimResults = true;
-        recognition.continuous = false;
-
-        recognition.onspeechstart = function () {
-          setVoiceStatus('🗣 聞き取り中…', 'listening');
-        };
+        // 文中の小休止で切れないよう連続認識にする。
+        // 手動モードはマイク再押下で確定、ハンズフリーは無音タイマーで自動確定。
+        recognition.continuous = true;
 
         recognition.onresult = function (e) {
-          var finalT = '', interim = '';
+          var interim = '';
           for (var i = e.resultIndex; i < e.results.length; i++) {
-            if (e.results[i].isFinal) finalT += e.results[i][0].transcript;
+            if (e.results[i].isFinal) finalTranscript += e.results[i][0].transcript;
             else interim += e.results[i][0].transcript;
           }
           var input = document.getElementById('replyInput');
-          input.value = finalT || interim;
+          input.value = finalTranscript + interim;
           autoGrow(input);
+          if (handsFree) resetSilenceTimer();
         };
 
         recognition.onend = function () {
           listening = false;
+          clearSilenceTimer();
           document.getElementById('micBtn').classList.remove('listening');
-          var t = document.getElementById('replyInput').value.trim();
+          var t = (finalTranscript || document.getElementById('replyInput').value).trim();
           if (t) {
             setVoiceStatus('送信中…', '');
             sendReply();
@@ -891,15 +893,30 @@
       }
     }
 
+    function resetSilenceTimer() {
+      clearSilenceTimer();
+      silenceTimer = setTimeout(function () {
+        if (listening) stopListening();   // → onend → 送信
+      }, 2500);
+    }
+    function clearSilenceTimer() {
+      if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+    }
+
     function startListening() {
       if (!recAvailable || micBlocked || busy || listening) return;
       stopAudio();
       try {
+        finalTranscript = '';
         document.getElementById('replyInput').value = '';
         recognition.start();
         listening = true;
         document.getElementById('micBtn').classList.add('listening');
-        setVoiceStatus('🎙 聞き取り中… 話し終えたら少しお待ちください', 'listening');
+        setVoiceStatus(
+          handsFree
+            ? '🎙 お話しください（話し終えて少し待つと自動送信）'
+            : '🎙 お話しください。話し終えたら 🎤 をもう一度押して送信',
+          'listening');
       } catch (e) {
         // 二重start等は無視
         listening = false;
@@ -925,6 +942,7 @@
 
     function cleanupVoice() {
       stopAudio();
+      clearSilenceTimer();
       if (recognition && listening) {
         try { recognition.abort(); } catch (e) {}
       }
