@@ -1,0 +1,7 @@
+# clasp push 対象外（ソース以外を除外）
+**/**
+!Code.gs
+!Scenarios.gs
+!Prompt.gs
+!Index.html
+!appsscript.json

@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>外線対応ロープレ | aicorpo</title>
+  <style>
+    :root {
+      --bg: #f4f6fb;
+      --card: #ffffff;
+      --primary: #2563eb;
+      --primary-dark: #1d4ed8;
+      --accent: #0ea5e9;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --beginner: #22c55e;
+      --intermediate: #f59e0b;
+      --advanced: #ef4444;
+      --staff: #2563eb;
+      --caller: #e5e7eb;
+      --shadow: 0 4px 20px rgba(0,0,0,0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    .app {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 16px;
+      min-height: 100vh;
+    }
+    header.appbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 4px 18px;
+    }
+    header.appbar .logo {
+      font-weight: 700;
+      font-size: 18px;
+      color: var(--primary);
+    }
+    header.appbar .sub {
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .screen { display: none; animation: fade .25s ease; }
+    .screen.active { display: block; }
+    @keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+    h1.title { font-size: 22px; margin: 4px 0 4px; }
+    p.lead { color: var(--muted); margin: 0 0 20px; }
+
+    /* ボタン共通 */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      border: none;
+      border-radius: 10px;
+      padding: 12px 18px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform .05s, background .15s, box-shadow .15s;
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-primary:hover { background: var(--primary-dark); }
+    .btn-ghost { background: #fff; color: var(--primary); border: 1px solid var(--line); }
+    .btn-ghost:hover { background: #f0f4ff; }
+    .btn-danger { background: var(--advanced); color: #fff; }
+    .btn-danger:hover { filter: brightness(0.95); }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-back {
+      background: none; border: none; color: var(--muted);
+      cursor: pointer; font-size: 14px; padding: 6px 0; margin-bottom: 8px;
+    }
+    .btn-back:hover { color: var(--text); }
+
+    /* 難易度カード */
+    .diff-grid { display: grid; gap: 14px; }
+    .diff-card {
+      background: var(--card);
+      border-radius: 14px;
+      padding: 20px;
+      box-shadow: var(--shadow);
+      cursor: pointer;
+      border-left: 6px solid var(--line);
+      transition: transform .1s, box-shadow .15s;
+    }
+    .diff-card:hover { transform: translateY(-2px); box-shadow: 0 8px 28px rgba(0,0,0,0.12); }
+    .diff-card.beginner { border-left-color: var(--beginner); }
+    .diff-card.intermediate { border-left-color: var(--intermediate); }
+    .diff-card.advanced { border-left-color: var(--advanced); }
+    .diff-card .dc-head { display: flex; align-items: center; gap: 10px; }
+    .diff-card .badge {
+      font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 999px; color: #fff;
+    }
+    .badge.beginner { background: var(--beginner); }
+    .badge.intermediate { background: var(--intermediate); }
+    .badge.advanced { background: var(--advanced); }
+    .diff-card h3 { margin: 0; font-size: 17px; }
+    .diff-card p { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
+
+    /* シナリオ一覧 */
+    .scenario-list { display: grid; gap: 12px; }
+    .scenario-card {
+      background: var(--card);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: var(--shadow);
+      cursor: pointer;
+      transition: transform .1s;
+    }
+    .scenario-card:hover { transform: translateY(-2px); }
+    .scenario-card .sc-id { font-size: 12px; color: var(--muted); font-weight: 700; }
+    .scenario-card h3 { margin: 2px 0 6px; font-size: 16px; }
+    .scenario-card .meta { font-size: 13px; color: var(--muted); }
+
+    /* ロープレ画面 */
+    .caller-info {
+      background: linear-gradient(135deg, #1e3a8a, #2563eb);
+      color: #fff;
+      border-radius: 14px;
+      padding: 16px;
+      margin-bottom: 14px;
+      box-shadow: var(--shadow);
+    }
+    .caller-info .ci-row { display: flex; align-items: center; gap: 10px; }
+    .caller-info .avatar {
+      width: 44px; height: 44px; border-radius: 50%;
+      background: rgba(255,255,255,0.2);
+      display: flex; align-items: center; justify-content: center; font-size: 22px;
+    }
+    .caller-info .ci-name { font-weight: 700; font-size: 16px; }
+    .caller-info .ci-sub { font-size: 13px; opacity: .9; }
+    .caller-info .ci-purpose {
+      margin-top: 12px; font-size: 13px;
+      background: rgba(255,255,255,0.12); padding: 8px 12px; border-radius: 8px;
+    }
+
+    .chat {
+      background: var(--card);
+      border-radius: 14px;
+      padding: 14px;
+      box-shadow: var(--shadow);
+      min-height: 220px;
+      max-height: 48vh;
+      overflow-y: auto;
+      margin-bottom: 12px;
+    }
+    .bubble-row { display: flex; margin-bottom: 12px; }
+    .bubble-row.staff { justify-content: flex-end; }
+    .bubble {
+      max-width: 78%;
+      padding: 10px 14px;
+      border-radius: 16px;
+      font-size: 15px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .bubble-row.caller .bubble { background: var(--caller); color: var(--text); border-bottom-left-radius: 4px; }
+    .bubble-row.staff .bubble { background: var(--staff); color: #fff; border-bottom-right-radius: 4px; }
+    .bubble .spk { display: block; font-size: 11px; opacity: .7; margin-bottom: 2px; }
+
+    .typing { font-size: 13px; color: var(--muted); padding: 4px 6px; }
+    .typing span { animation: blink 1.2s infinite; }
+    .typing span:nth-child(2) { animation-delay: .2s; }
+    .typing span:nth-child(3) { animation-delay: .4s; }
+    @keyframes blink { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
+
+    .composer { display: flex; gap: 8px; align-items: flex-end; }
+    .composer textarea {
+      flex: 1;
+      resize: none;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 15px;
+      font-family: inherit;
+      min-height: 46px;
+      max-height: 120px;
+    }
+    .composer textarea:focus { outline: 2px solid var(--primary); border-color: transparent; }
+    .roleplay-actions { display: flex; justify-content: space-between; margin-top: 12px; gap: 8px; }
+
+    /* 採点画面 */
+    .score-hero {
+      background: var(--card);
+      border-radius: 16px;
+      padding: 24px;
+      text-align: center;
+      box-shadow: var(--shadow);
+      margin-bottom: 16px;
+    }
+    .score-hero .total { font-size: 52px; font-weight: 800; line-height: 1; }
+    .score-hero .total small { font-size: 20px; color: var(--muted); font-weight: 600; }
+    .score-hero .rank { margin-top: 6px; font-size: 16px; font-weight: 700; }
+
+    .breakdown { display: grid; gap: 12px; margin-bottom: 18px; }
+    .bd-item { background: var(--card); border-radius: 12px; padding: 14px; box-shadow: var(--shadow); }
+    .bd-head { display: flex; justify-content: space-between; align-items: baseline; }
+    .bd-head .label { font-weight: 700; font-size: 15px; }
+    .bd-head .val { font-weight: 700; color: var(--primary); }
+    .bd-bar { height: 8px; background: var(--line); border-radius: 999px; margin: 8px 0; overflow: hidden; }
+    .bd-bar > div { height: 100%; background: linear-gradient(90deg, var(--accent), var(--primary)); border-radius: 999px; transition: width .6s ease; }
+    .bd-comment { font-size: 13px; color: var(--muted); }
+
+    .section-block { background: var(--card); border-radius: 12px; padding: 16px; box-shadow: var(--shadow); margin-bottom: 16px; }
+    .section-block h3 { margin: 0 0 10px; font-size: 15px; }
+    .good-list { margin: 0; padding-left: 18px; }
+    .good-list li { margin-bottom: 6px; }
+    .imp-item { border-left: 3px solid var(--accent); padding: 6px 0 6px 12px; margin-bottom: 14px; }
+    .imp-item .point { font-weight: 600; margin-bottom: 4px; }
+    .imp-item .example {
+      background: #eef6ff; border-radius: 8px; padding: 8px 12px; font-size: 14px;
+      position: relative;
+    }
+    .imp-item .example::before { content: "言い換え例"; display: block; font-size: 11px; color: var(--primary); font-weight: 700; margin-bottom: 2px; }
+
+    .final-actions { display: grid; gap: 10px; margin-top: 8px; margin-bottom: 30px; }
+
+    /* ローディング / エラー */
+    .overlay {
+      position: fixed; inset: 0; background: rgba(255,255,255,0.7);
+      display: none; align-items: center; justify-content: center; z-index: 50;
+    }
+    .overlay.show { display: flex; }
+    .spinner {
+      width: 42px; height: 42px; border: 4px solid var(--line);
+      border-top-color: var(--primary); border-radius: 50%;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .error-banner {
+      background: #fef2f2; color: #991b1b; border: 1px solid #fecaca;
+      border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; font-size: 14px;
+      display: none;
+    }
+    .error-banner.show { display: block; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="appbar">
+      <span class="logo">aicorpo</span>
+      <span class="sub">外線対応ロープレ</span>
+    </header>
+
+    <div id="errorBanner" class="error-banner"></div>
+
+    <!-- ============ TOP（難易度選択） ============ -->
+    <section id="screen-top" class="screen active">
+      <h1 class="title">難易度を選んでください</h1>
+      <p class="lead">外線電話の応対を練習します。レベルに合わせて選択してください。</p>
+      <div class="diff-grid">
+        <div class="diff-card beginner" onclick="goScenarioList('beginner')">
+          <div class="dc-head"><span class="badge beginner">初級</span><h3>基本の応対</h3></div>
+          <p>用件が明確で穏やかなお客様。担当者も在席。まずはここから。</p>
+        </div>
+        <div class="diff-card intermediate" onclick="goScenarioList('intermediate')">
+          <div class="dc-head"><span class="badge intermediate">中級</span><h3>不在対応・変更依頼</h3></div>
+          <p>担当者不在での折り返し、掲載変更、請求確認など。判断が必要。</p>
+        </div>
+        <div class="diff-card advanced" onclick="goScenarioList('advanced')">
+          <div class="dc-head"><span class="badge advanced">上級</span><h3>クレーム・複合対応</h3></div>
+          <p>クレームや解約要求、複数用件の同時対応。冷静さと提案力が問われる。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ シナリオ選択 ============ -->
+    <section id="screen-scenarios" class="screen">
+      <button class="btn-back" onclick="show('screen-top')">← 難易度選択に戻る</button>
+      <h1 class="title" id="scenarioListTitle">シナリオを選択</h1>
+      <p class="lead">練習したいシナリオを選んでください。</p>
+      <div id="scenarioList" class="scenario-list"></div>
+    </section>
+
+    <!-- ============ ロープレ ============ -->
+    <section id="screen-roleplay" class="screen">
+      <button class="btn-back" onclick="confirmLeaveRoleplay()">← シナリオ選択に戻る</button>
+      <div id="callerInfo" class="caller-info"></div>
+      <div id="chat" class="chat"></div>
+      <div class="composer">
+        <textarea id="replyInput" placeholder="応対のセリフを入力してEnterまたはSendで送信" rows="1"
+          onkeydown="handleKey(event)" oninput="autoGrow(this)"></textarea>
+        <button class="btn btn-primary" id="sendBtn" onclick="sendReply()">送信</button>
+      </div>
+      <div class="roleplay-actions">
+        <span style="font-size:13px;color:var(--muted);align-self:center;">用件が済んだら「通話終了」で採点します</span>
+        <button class="btn btn-danger" id="endBtn" onclick="endCall()">通話終了して採点</button>
+      </div>
+    </section>
+
+    <!-- ============ 採点・フィードバック ============ -->
+    <section id="screen-result" class="screen">
+      <h1 class="title">採点結果</h1>
+      <div id="scoreHero" class="score-hero"></div>
+      <div id="breakdown" class="breakdown"></div>
+      <div class="section-block">
+        <h3>👍 良かった点</h3>
+        <ul id="goodPoints" class="good-list"></ul>
+      </div>
+      <div class="section-block">
+        <h3>📈 改善点</h3>
+        <div id="improvements"></div>
+      </div>
+      <div class="final-actions">
+        <button class="btn btn-primary" onclick="retrySameScenario()">同じシナリオを再挑戦</button>
+        <button class="btn btn-ghost" onclick="goScenarioList(currentScenario.difficulty)">別のシナリオへ</button>
+        <button class="btn btn-ghost" onclick="show('screen-top')">トップに戻る</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="overlay" class="overlay"><div class="spinner"></div></div>
+
+  <script>
+    // ============ 状態 ============
+    var scenarioData = null;       // { groups:{...}, labels:{...} }
+    var currentScenario = null;    // 選択中シナリオ
+    var conversationLog = [];      // [{role:'caller'|'staff', text}]
+    var busy = false;
+
+    // ============ 画面遷移 ============
+    function show(id) {
+      var screens = document.querySelectorAll('.screen');
+      for (var i = 0; i < screens.length; i++) screens[i].classList.remove('active');
+      document.getElementById(id).classList.add('active');
+      window.scrollTo(0, 0);
+    }
+
+    function showOverlay(on) {
+      document.getElementById('overlay').classList.toggle('show', on);
+    }
+
+    function showError(msg) {
+      var b = document.getElementById('errorBanner');
+      b.textContent = '⚠ ' + msg;
+      b.classList.add('show');
+      setTimeout(function () { b.classList.remove('show'); }, 6000);
+    }
+
+    // ============ 初期化：シナリオ取得 ============
+    function init() {
+      // GAS外（ローカルプレビュー等）では google.script.run が存在しない。
+      // その場合はUIだけ閲覧できるよう案内を出して終了する。
+      if (typeof google === 'undefined' || !google.script || !google.script.run) {
+        showOverlay(false);
+        showError('プレビュー表示中です。AI会話・採点機能は Google Apps Script へデプロイすると動作します。');
+        return;
+      }
+      showOverlay(true);
+      google.script.run
+        .withSuccessHandler(function (data) {
+          scenarioData = data;
+          showOverlay(false);
+        })
+        .withFailureHandler(function (err) {
+          showOverlay(false);
+          showError('シナリオの読み込みに失敗しました: ' + err.message);
+        })
+        .getScenarios();
+    }
+
+    // ============ シナリオ一覧表示 ============
+    function goScenarioList(difficulty) {
+      if (!scenarioData) { showError('データ読み込み中です。少々お待ちください。'); return; }
+      var label = scenarioData.labels[difficulty] || difficulty;
+      document.getElementById('scenarioListTitle').textContent = '【' + label + '】シナリオ一覧';
+
+      var list = scenarioData.groups[difficulty] || [];
+      var html = '';
+      list.forEach(function (s) {
+        html += '<div class="scenario-card" onclick="startRoleplay(\'' + s.id + '\')">'
+          + '<div class="sc-id">' + s.id + '</div>'
+          + '<h3>' + escapeHtml(s.title) + '</h3>'
+          + '<div class="meta">' + escapeHtml(s.company) + ' / ' + escapeHtml(s.position) + '</div>'
+          + '<div class="meta">用件: ' + escapeHtml(s.purpose) + '</div>'
+          + '</div>';
+      });
+      document.getElementById('scenarioList').innerHTML = html || '<p>シナリオがありません。</p>';
+      show('screen-scenarios');
+    }
+
+    // ============ ロープレ開始 ============
+    function findScenario(id) {
+      var groups = scenarioData.groups;
+      for (var key in groups) {
+        for (var i = 0; i < groups[key].length; i++) {
+          if (groups[key][i].id === id) return groups[key][i];
+        }
+      }
+      return null;
+    }
+
+    function startRoleplay(scenarioId) {
+      currentScenario = findScenario(scenarioId);
+      if (!currentScenario) { showError('シナリオが見つかりません。'); return; }
+      conversationLog = [];
+
+      // 架電者情報カード
+      var s = currentScenario;
+      document.getElementById('callerInfo').innerHTML =
+        '<div class="ci-row">'
+        + '<div class="avatar">📞</div>'
+        + '<div><div class="ci-name">' + escapeHtml(s.caller_name) + ' 様</div>'
+        + '<div class="ci-sub">' + escapeHtml(s.company) + ' / ' + escapeHtml(s.position) + '</div></div>'
+        + '</div>'
+        + '<div class="ci-purpose">📋 想定される用件: ' + escapeHtml(s.purpose) + '</div>';
+
+      document.getElementById('chat').innerHTML = '';
+      document.getElementById('replyInput').value = '';
+      autoGrow(document.getElementById('replyInput'));
+      setBusy(false);
+      show('screen-roleplay');
+
+      // 第一声
+      conversationLog.push({ role: 'caller', text: s.first_message });
+      addBubble('caller', s.first_message);
+    }
+
+    // ============ 吹き出し描画 ============
+    function addBubble(role, text) {
+      var chat = document.getElementById('chat');
+      var row = document.createElement('div');
+      row.className = 'bubble-row ' + role;
+      var spk = (role === 'staff') ? 'あなた（応対者）' : (currentScenario.caller_name + ' 様');
+      row.innerHTML = '<div class="bubble"><span class="spk">' + escapeHtml(spk) + '</span>'
+        + escapeHtml(text) + '</div>';
+      chat.appendChild(row);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    function showTyping(on) {
+      var chat = document.getElementById('chat');
+      var existing = document.getElementById('typingRow');
+      if (on) {
+        if (existing) return;
+        var row = document.createElement('div');
+        row.id = 'typingRow';
+        row.className = 'bubble-row caller';
+        row.innerHTML = '<div class="bubble"><span class="typing"><span>●</span><span>●</span><span>●</span></span></div>';
+        chat.appendChild(row);
+        chat.scrollTop = chat.scrollHeight;
+      } else if (existing) {
+        existing.remove();
+      }
+    }
+
+    // ============ 送信 ============
+    function setBusy(on) {
+      busy = on;
+      document.getElementById('sendBtn').disabled = on;
+      document.getElementById('replyInput').disabled = on;
+    }
+
+    function sendReply() {
+      if (busy) return;
+      var input = document.getElementById('replyInput');
+      var text = input.value.trim();
+      if (!text) return;
+
+      addBubble('staff', text);
+      conversationLog.push({ role: 'staff', text: text });
+      input.value = '';
+      autoGrow(input);
+      setBusy(true);
+      showTyping(true);
+
+      google.script.run
+        .withSuccessHandler(function (res) {
+          showTyping(false);
+          setBusy(false);
+          if (res && res.reply) {
+            conversationLog.push({ role: 'caller', text: res.reply });
+            addBubble('caller', res.reply);
+            if (res.ended) {
+              setTimeout(function () {
+                if (confirm('架電者が通話を終えようとしています。採点に進みますか？')) {
+                  endCall();
+                }
+              }, 400);
+            }
+          }
+          document.getElementById('replyInput').focus();
+        })
+        .withFailureHandler(function (err) {
+          showTyping(false);
+          setBusy(false);
+          showError('応答の取得に失敗しました: ' + err.message);
+        })
+        .getNextCallerReply(currentScenario.id, conversationLog);
+    }
+
+    function handleKey(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendReply();
+      }
+    }
+
+    function autoGrow(el) {
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+    }
+
+    // ============ 通話終了 → 採点 ============
+    function endCall() {
+      var staffTurns = conversationLog.filter(function (t) { return t.role === 'staff'; });
+      if (staffTurns.length === 0) {
+        showError('まだ応対していません。一度は応答してから終了してください。');
+        return;
+      }
+      showOverlay(true);
+      google.script.run
+        .withSuccessHandler(function (result) {
+          showOverlay(false);
+          renderResult(result);
+          show('screen-result');
+        })
+        .withFailureHandler(function (err) {
+          showOverlay(false);
+          showError('採点に失敗しました: ' + err.message);
+        })
+        .scoreRoleplay(currentScenario.id, conversationLog);
+    }
+
+    function confirmLeaveRoleplay() {
+      if (conversationLog.filter(function (t) { return t.role === 'staff'; }).length > 0) {
+        if (!confirm('ロープレを中断してシナリオ選択に戻りますか？（採点されません）')) return;
+      }
+      goScenarioList(currentScenario.difficulty);
+    }
+
+    // ============ 採点結果描画 ============
+    var BD_LABELS = {
+      greeting: { label: '第一声・挨拶', max: 20 },
+      listening: { label: '傾聴・確認', max: 20 },
+      response: { label: '適切な対応', max: 25 },
+      language: { label: '言葉遣い', max: 20 },
+      attitude: { label: '印象・姿勢', max: 15 }
+    };
+    var BD_ORDER = ['greeting', 'listening', 'response', 'language', 'attitude'];
+
+    function rankOf(score) {
+      if (score >= 90) return { t: 'S 素晴らしい対応！', c: '#16a34a' };
+      if (score >= 75) return { t: 'A 良い対応です', c: '#22c55e' };
+      if (score >= 60) return { t: 'B もう一歩', c: '#f59e0b' };
+      if (score >= 40) return { t: 'C 要練習', c: '#f97316' };
+      return { t: 'D 基礎から見直そう', c: '#ef4444' };
+    }
+
+    function renderResult(r) {
+      if (!r || typeof r.total_score === 'undefined') {
+        showError('採点結果の形式が不正です。');
+        return;
+      }
+      var rank = rankOf(r.total_score);
+      document.getElementById('scoreHero').innerHTML =
+        '<div class="total" style="color:' + rank.c + '">' + r.total_score + '<small> / 100</small></div>'
+        + '<div class="rank" style="color:' + rank.c + '">' + rank.t + '</div>';
+
+      // 項目別
+      var bd = r.breakdown || {};
+      var bdHtml = '';
+      BD_ORDER.forEach(function (key) {
+        var meta = BD_LABELS[key];
+        var item = bd[key] || { score: 0, comment: '' };
+        var pct = Math.round((item.score / meta.max) * 100);
+        bdHtml += '<div class="bd-item">'
+          + '<div class="bd-head"><span class="label">' + meta.label + '</span>'
+          + '<span class="val">' + item.score + ' / ' + meta.max + '</span></div>'
+          + '<div class="bd-bar"><div style="width:' + pct + '%"></div></div>'
+          + '<div class="bd-comment">' + escapeHtml(item.comment || '') + '</div>'
+          + '</div>';
+      });
+      document.getElementById('breakdown').innerHTML = bdHtml;
+
+      // 良かった点
+      var goodHtml = '';
+      (r.good_points || []).forEach(function (g) {
+        goodHtml += '<li>' + escapeHtml(g) + '</li>';
+      });
+      document.getElementById('goodPoints').innerHTML = goodHtml || '<li>（特筆点なし）</li>';
+
+      // 改善点
+      var impHtml = '';
+      (r.improvements || []).forEach(function (imp) {
+        impHtml += '<div class="imp-item">'
+          + '<div class="point">' + escapeHtml(imp.point || '') + '</div>'
+          + (imp.example ? '<div class="example">' + escapeHtml(imp.example) + '</div>' : '')
+          + '</div>';
+      });
+      document.getElementById('improvements').innerHTML = impHtml || '<p>改善点はありません。</p>';
+    }
+
+    function retrySameScenario() {
+      startRoleplay(currentScenario.id);
+    }
+
+    // ============ ユーティリティ ============
+    function escapeHtml(str) {
+      if (str == null) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    // 起動
+    window.addEventListener('load', init);
+  </script>
+</body>
+</html>
