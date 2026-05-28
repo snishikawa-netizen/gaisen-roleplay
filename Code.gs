@@ -11,10 +11,14 @@
  *   - scoreRoleplay(scenarioId, log)         : 会話を採点して返す
  */
 
-var GEMINI_MODEL = 'gemini-1.5-flash';
+var GEMINI_MODEL = 'gemini-2.5-flash';
 var GEMINI_ENDPOINT =
   'https://generativelanguage.googleapis.com/v1beta/models/' +
   GEMINI_MODEL + ':generateContent';
+
+// 音声合成（TTS）用モデルと既定ボイス
+var GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
+var DEFAULT_TTS_VOICE = 'Kore';
 
 // ===================================================================
 // Web アプリのエントリーポイント
@@ -40,10 +44,14 @@ function doPost(e) {
   var result;
   try {
     var body = JSON.parse(e.postData.contents);
-    if (body.action === 'reply') {
+    if (body.action === 'scenarios') {
+      result = getScenarios();
+    } else if (body.action === 'reply') {
       result = getNextCallerReply(body.scenarioId, body.log);
     } else if (body.action === 'score') {
       result = scoreRoleplay(body.scenarioId, body.log);
+    } else if (body.action === 'tts') {
+      result = ttsGenerate(body.text, body.voice);
     } else {
       result = { error: 'unknown action: ' + body.action };
     }
@@ -210,6 +218,68 @@ function callGeminiAPI(contents, systemPrompt) {
     return json.candidates[0].content.parts[0].text;
   } catch (err) {
     throw new Error('Gemini レスポンスから本文を取得できませんでした: ' + text);
+  }
+}
+
+// ===================================================================
+// 音声合成（Gemini TTS）
+// ===================================================================
+
+/**
+ * テキストを Gemini TTS で音声化し、base64音声と mimeType を返す。
+ * @param {string} text - 読み上げる日本語テキスト
+ * @param {string} voiceName - Gemini のプリセットボイス名（例: 'Kore'）
+ * @return {Object} { audio: base64文字列(PCM 16bit LE mono), mimeType: 'audio/L16;...rate=24000' }
+ */
+function ttsGenerate(text, voiceName) {
+  var apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+  if (!apiKey) {
+    throw new Error('スクリプトプロパティ GEMINI_API_KEY が設定されていません。');
+  }
+  if (!text) {
+    throw new Error('読み上げるテキストが空です。');
+  }
+
+  var url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
+    GEMINI_TTS_MODEL + ':generateContent?key=' + apiKey;
+
+  var payload = {
+    contents: [{ parts: [{ text: text }] }],
+    generationConfig: {
+      responseModalities: ['AUDIO'],
+      speechConfig: {
+        voiceConfig: {
+          prebuiltVoiceConfig: { voiceName: voiceName || DEFAULT_TTS_VOICE }
+        }
+      }
+    }
+  };
+
+  var res = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  });
+
+  var code = res.getResponseCode();
+  var textBody = res.getContentText();
+  if (code !== 200) {
+    throw new Error('TTS APIエラー (HTTP ' + code + '): ' + textBody);
+  }
+
+  var json;
+  try {
+    json = JSON.parse(textBody);
+  } catch (err) {
+    throw new Error('TTSレスポンスのJSONパースに失敗しました: ' + textBody);
+  }
+
+  try {
+    var part = json.candidates[0].content.parts[0];
+    return { audio: part.inlineData.data, mimeType: part.inlineData.mimeType };
+  } catch (err) {
+    throw new Error('TTSレスポンスから音声を取得できませんでした: ' + textBody);
   }
 }
 

@@ -229,6 +229,33 @@
 
     .final-actions { display: grid; gap: 10px; margin-top: 8px; margin-bottom: 30px; }
 
+    /* 音声コントロール */
+    .voicebar {
+      background: var(--card); border-radius: 14px; padding: 16px;
+      box-shadow: var(--shadow); margin-bottom: 12px; text-align: center;
+    }
+    .mic-btn {
+      width: 76px; height: 76px; border-radius: 50%; border: none;
+      background: var(--primary); color: #fff; font-size: 32px; cursor: pointer;
+      transition: transform .1s, background .2s;
+    }
+    .mic-btn:hover { background: var(--primary-dark); }
+    .mic-btn:active { transform: scale(0.96); }
+    .mic-btn.listening { background: var(--advanced); animation: pulse 1.2s infinite; }
+    .mic-btn:disabled { opacity: .4; cursor: not-allowed; animation: none; }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(239,68,68,.5); }
+      70% { box-shadow: 0 0 0 18px rgba(239,68,68,0); }
+      100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); }
+    }
+    .voice-status { margin-top: 10px; font-size: 14px; color: var(--muted); min-height: 20px; }
+    .voice-status.speaking { color: var(--primary); font-weight: 600; }
+    .voice-status.listening { color: var(--advanced); font-weight: 600; }
+    .voice-opts { margin-top: 12px; display: flex; gap: 18px; justify-content: center; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+    .voice-opts label { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+    .composer.fallback { margin-top: 4px; }
+    .composer-hint { font-size: 12px; color: var(--muted); margin: 8px 0 4px; text-align: center; }
+
     /* ローディング / エラー */
     .overlay {
       position: fixed; inset: 0; background: rgba(255,255,255,0.7);
@@ -291,7 +318,26 @@
       <button class="btn-back" onclick="confirmLeaveRoleplay()">← シナリオ選択に戻る</button>
       <div id="callerInfo" class="caller-info"></div>
       <div id="chat" class="chat"></div>
-      <div class="composer">
+
+      <div class="voicebar" id="voicebar">
+        <button class="mic-btn" id="micBtn" onclick="toggleMic()" title="押して話す">🎤</button>
+        <div class="voice-status" id="voiceStatus">マイクボタンを押して話してください</div>
+        <div class="voice-opts">
+          <label><input type="checkbox" id="ttsToggle" checked onchange="onTtsToggle(this.checked)"> 🔊 相手の声を読み上げ</label>
+          <label><input type="checkbox" id="hfToggle" onchange="handsFree = this.checked"> 🤝 ハンズフリー（自動で聞き取り）</label>
+        </div>
+        <div class="voice-opts">
+          <label>🗣 声:
+            <select id="voiceSelect" onchange="onVoiceChange(this.value)" style="max-width:240px;"></select>
+          </label>
+          <label>速さ:
+            <input type="range" id="rateSlider" min="0.7" max="1.3" step="0.05" value="1" onchange="onRateChange(this.value)">
+          </label>
+        </div>
+      </div>
+
+      <div class="composer-hint">うまく聞き取れないときは、下のテキスト入力でも応対できます</div>
+      <div class="composer fallback">
         <textarea id="replyInput" placeholder="応対のセリフを入力してEnterまたはSendで送信" rows="1"
           onkeydown="handleKey(event)" oninput="autoGrow(this)"></textarea>
         <button class="btn btn-primary" id="sendBtn" onclick="sendReply()">送信</button>
@@ -332,6 +378,33 @@
     var conversationLog = [];      // [{role:'caller'|'staff', text}]
     var busy = false;
 
+    // 音声まわり
+    var speechInited = false;
+    var recognition = null;        // SpeechRecognition インスタンス
+    var recAvailable = false;      // 音声認識が使えるか
+    var micBlocked = false;        // マイクがブロックされたか
+    var listening = false;         // 聞き取り中か
+    var ttsOn = true;              // 読み上げ ON/OFF
+    var handsFree = false;         // ハンズフリー（読み上げ後に自動で聞き取り）
+    var jaVoice = null;            // 選択中の端末ボイス（local時）
+    var allJaVoices = [];          // 利用可能な日本語ボイス一覧
+    var speakRate = 1.0;           // 読み上げ速度（端末ボイスのみ）
+    var ttsMode = 'cloud';         // 'cloud'(Gemini) | 'local'(端末)
+    var cloudVoice = 'Kore';       // Gemini のプリセットボイス
+    var currentAudio = null;       // 再生中の音声(Audio要素)
+
+    // Gemini のプリセットボイス（自然・端末非依存）
+    var GEMINI_VOICES = [
+      { id: 'Kore', label: 'Kore（女性・落ち着き）' },
+      { id: 'Aoede', label: 'Aoede（女性・やわらか）' },
+      { id: 'Leda', label: 'Leda（女性・若め）' },
+      { id: 'Zephyr', label: 'Zephyr（女性・明るい）' },
+      { id: 'Puck', label: 'Puck（男性・快活）' },
+      { id: 'Charon', label: 'Charon（男性・低め）' },
+      { id: 'Orus', label: 'Orus（男性・しっかり）' },
+      { id: 'Fenrir', label: 'Fenrir（男性・力強い）' }
+    ];
+
     // ============ 画面遷移 ============
     function show(id) {
       var screens = document.querySelectorAll('.screen');
@@ -344,33 +417,75 @@
       document.getElementById('overlay').classList.toggle('show', on);
     }
 
-    function showError(msg) {
+    var _errTimer = null;
+    function showError(msg, persist) {
       var b = document.getElementById('errorBanner');
       b.textContent = '⚠ ' + msg;
       b.classList.add('show');
-      setTimeout(function () { b.classList.remove('show'); }, 6000);
+      if (_errTimer) clearTimeout(_errTimer);
+      if (!persist) _errTimer = setTimeout(function () { b.classList.remove('show'); }, 6000);
+    }
+
+    // ============ サーバ通信（GAS内=google.script.run / 外部=fetch） ============
+    // GAS外（別ホスティング）で動かす場合の API エンドポイント（GASのウェブアプリURL /exec）
+    var API_URL = 'https://script.google.com/macros/s/AKfycbx_gOUv7ltgQDeXLd2zCh5mz4oFJvYOYrILa8BDEP0W7D0pCAmOfjuPPBoIpHx9faWp/exec';
+
+    function hasGasRun() {
+      return typeof google !== 'undefined' && google.script && google.script.run;
+    }
+
+    // action: 'scenarios' | 'reply' | 'score'
+    function callServer(action, payload, onSuccess, onFailure) {
+      payload = payload || {};
+      if (hasGasRun()) {
+        var r = google.script.run.withSuccessHandler(onSuccess).withFailureHandler(onFailure);
+        if (action === 'scenarios') r.getScenarios();
+        else if (action === 'reply') r.getNextCallerReply(payload.scenarioId, payload.log);
+        else if (action === 'score') r.scoreRoleplay(payload.scenarioId, payload.log);
+        else if (action === 'tts') r.ttsGenerate(payload.text, payload.voice);
+        return;
+      }
+      // 外部ホスティング: GAS の doPost を fetch で叩く。
+      // Content-Type を text/plain にして CORS プリフライトを回避する。
+      var bodyObj = { action: action };
+      for (var k in payload) { if (payload.hasOwnProperty(k)) bodyObj[k] = payload[k]; }
+      fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(bodyObj)
+      })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          if (data && data.error) onFailure(new Error(data.error));
+          else onSuccess(data);
+        })
+        .catch(function (err) {
+          onFailure(new Error('通信に失敗しました（' + err.message + '）'));
+        });
     }
 
     // ============ 初期化：シナリオ取得 ============
     function init() {
-      // GAS外（ローカルプレビュー等）では google.script.run が存在しない。
-      // その場合はUIだけ閲覧できるよう案内を出して終了する。
-      if (typeof google === 'undefined' || !google.script || !google.script.run) {
+      if (!hasGasRun() && !API_URL) {
         showOverlay(false);
-        showError('プレビュー表示中です。AI会話・採点機能は Google Apps Script へデプロイすると動作します。');
+        showError('APIのURL（API_URL）が設定されていません。');
         return;
       }
+      // 音声合成ボイスの早期ウォームアップ（非同期で読み込まれるため）
+      if (window.speechSynthesis) {
+        refreshVoices();
+        speechSynthesis.onvoiceschanged = refreshVoices;
+      }
       showOverlay(true);
-      google.script.run
-        .withSuccessHandler(function (data) {
+      callServer('scenarios', {},
+        function (data) {
           scenarioData = data;
           showOverlay(false);
-        })
-        .withFailureHandler(function (err) {
+        },
+        function (err) {
           showOverlay(false);
           showError('シナリオの読み込みに失敗しました: ' + err.message);
-        })
-        .getScenarios();
+        });
     }
 
     // ============ シナリオ一覧表示 ============
@@ -425,9 +540,12 @@
       setBusy(false);
       show('screen-roleplay');
 
+      initSpeech();
+
       // 第一声
       conversationLog.push({ role: 'caller', text: s.first_message });
       addBubble('caller', s.first_message);
+      speak(s.first_message, afterCallerSpoke);
     }
 
     // ============ 吹き出し描画 ============
@@ -463,6 +581,8 @@
       busy = on;
       document.getElementById('sendBtn').disabled = on;
       document.getElementById('replyInput').disabled = on;
+      var mic = document.getElementById('micBtn');
+      if (mic) mic.disabled = on || !recAvailable || micBlocked;
     }
 
     function sendReply() {
@@ -478,29 +598,29 @@
       setBusy(true);
       showTyping(true);
 
-      google.script.run
-        .withSuccessHandler(function (res) {
+      callServer('reply', { scenarioId: currentScenario.id, log: conversationLog },
+        function (res) {
           showTyping(false);
           setBusy(false);
           if (res && res.reply) {
             conversationLog.push({ role: 'caller', text: res.reply });
             addBubble('caller', res.reply);
             if (res.ended) {
-              setTimeout(function () {
+              speak(res.reply, function () {
                 if (confirm('架電者が通話を終えようとしています。採点に進みますか？')) {
                   endCall();
                 }
-              }, 400);
+              });
+            } else {
+              speak(res.reply, afterCallerSpoke);
             }
           }
-          document.getElementById('replyInput').focus();
-        })
-        .withFailureHandler(function (err) {
+        },
+        function (err) {
           showTyping(false);
           setBusy(false);
           showError('応答の取得に失敗しました: ' + err.message);
-        })
-        .getNextCallerReply(currentScenario.id, conversationLog);
+        });
     }
 
     function handleKey(e) {
@@ -515,6 +635,309 @@
       el.style.height = Math.min(el.scrollHeight, 120) + 'px';
     }
 
+    // ============ 音声（読み上げ / 聞き取り） ============
+    function refreshVoices() {
+      if (window.speechSynthesis) {
+        var voices = speechSynthesis.getVoices() || [];
+        allJaVoices = voices.filter(function (v) {
+          return v.lang && (v.lang === 'ja-JP' || v.lang.toLowerCase().indexOf('ja') === 0);
+        });
+      }
+      // 保存済みの選択を復元（なければ Gemini Kore を既定）
+      var saved = null;
+      try { saved = localStorage.getItem('roleplay_voice'); } catch (e) {}
+      if (saved) applyVoiceChoice(saved, true);
+      else { ttsMode = 'cloud'; cloudVoice = 'Kore'; }
+      populateVoiceSelect();
+    }
+
+    function populateVoiceSelect() {
+      var sel = document.getElementById('voiceSelect');
+      if (!sel) return;
+      sel.innerHTML = '';
+
+      var g = document.createElement('optgroup');
+      g.label = '🌟 Gemini音声（自然・推奨）';
+      GEMINI_VOICES.forEach(function (v) {
+        var o = document.createElement('option');
+        o.value = 'gemini:' + v.id;
+        o.textContent = v.label;
+        g.appendChild(o);
+      });
+      sel.appendChild(g);
+
+      if (allJaVoices.length) {
+        var lg = document.createElement('optgroup');
+        lg.label = '端末の音声（オフライン）';
+        allJaVoices.forEach(function (v) {
+          var o = document.createElement('option');
+          o.value = 'local:' + v.name;
+          o.textContent = v.name;
+          lg.appendChild(o);
+        });
+        sel.appendChild(lg);
+      }
+
+      sel.value = (ttsMode === 'cloud')
+        ? ('gemini:' + cloudVoice)
+        : (jaVoice ? 'local:' + jaVoice.name : 'gemini:' + cloudVoice);
+    }
+
+    function applyVoiceChoice(value, silent) {
+      if (value.indexOf('gemini:') === 0) {
+        ttsMode = 'cloud';
+        cloudVoice = value.slice('gemini:'.length);
+      } else if (value.indexOf('local:') === 0) {
+        ttsMode = 'local';
+        var name = value.slice('local:'.length);
+        jaVoice = allJaVoices.filter(function (v) { return v.name === name; })[0] || null;
+      }
+      try { localStorage.setItem('roleplay_voice', value); } catch (e) {}
+      if (!silent) {
+        var prev = ttsOn; ttsOn = true;
+        speak('はい、お電話ありがとうございます。アイコルポでございます。', null);
+        ttsOn = prev;
+      }
+    }
+
+    function onVoiceChange(value) { applyVoiceChoice(value, false); }
+
+    function onRateChange(val) { speakRate = parseFloat(val) || 1.0; }
+
+    // base64 PCM(16bit LE mono) を WAV にして再生用 Audio を作る
+    function pcmBase64ToAudio(b64, sampleRate) {
+      var raw = atob(b64);
+      var bytes = new Uint8Array(raw.length);
+      for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+      var dataSize = bytes.length;
+      var buffer = new ArrayBuffer(44 + dataSize);
+      var dv = new DataView(buffer);
+      function ws(off, s) { for (var i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); }
+      var numCh = 1, bps = 16;
+      var byteRate = sampleRate * numCh * bps / 8;
+      ws(0, 'RIFF'); dv.setUint32(4, 36 + dataSize, true); ws(8, 'WAVE');
+      ws(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true);
+      dv.setUint16(22, numCh, true); dv.setUint32(24, sampleRate, true);
+      dv.setUint32(28, byteRate, true); dv.setUint16(32, numCh * bps / 8, true);
+      dv.setUint16(34, bps, true);
+      ws(36, 'data'); dv.setUint32(40, dataSize, true);
+      new Uint8Array(buffer).set(bytes, 44);
+      var blob = new Blob([buffer], { type: 'audio/wav' });
+      var url = URL.createObjectURL(blob);
+      var audio = new Audio(url);
+      audio.addEventListener('ended', function () { URL.revokeObjectURL(url); });
+      return audio;
+    }
+
+    function parseSampleRate(mime) {
+      var m = /rate=(\d+)/.exec(mime || '');
+      return m ? parseInt(m[1], 10) : 24000;
+    }
+
+    function stopAudio() {
+      if (currentAudio) { try { currentAudio.pause(); } catch (e) {} currentAudio = null; }
+      if (window.speechSynthesis) speechSynthesis.cancel();
+    }
+
+    // Gemini クラウドTTSで読み上げ
+    function speakCloud(text, onend) {
+      setVoiceStatus('🔄 音声を生成中…', 'speaking');
+      callServer('tts', { text: text, voice: cloudVoice },
+        function (res) {
+          if (!res || !res.audio) {
+            setVoiceStatus('マイクボタンを押して話してください', '');
+            if (onend) onend();
+            return;
+          }
+          try {
+            var audio = pcmBase64ToAudio(res.audio, parseSampleRate(res.mimeType));
+            currentAudio = audio;
+            setVoiceStatus('📞 相手が話しています…', 'speaking');
+            audio.onended = function () {
+              setVoiceStatus('マイクボタンを押して話してください', '');
+              currentAudio = null;
+              if (onend) onend();
+            };
+            audio.onerror = function () {
+              setVoiceStatus('マイクボタンを押して話してください', '');
+              currentAudio = null;
+              if (onend) onend();
+            };
+            audio.play().catch(function () {
+              setVoiceStatus('マイクボタンを押して話してください', '');
+              if (onend) onend();
+            });
+          } catch (e) {
+            setVoiceStatus('マイクボタンを押して話してください', '');
+            if (onend) onend();
+          }
+        },
+        function (err) {
+          showError('音声生成に失敗しました（' + err.message + '）。端末の音声に切り替えます。');
+          ttsMode = 'local';
+          if (!jaVoice && allJaVoices.length) jaVoice = allJaVoices[0];
+          speak(text, onend);
+        });
+    }
+
+    function setVoiceStatus(text, mode) {
+      var el = document.getElementById('voiceStatus');
+      el.textContent = text;
+      el.className = 'voice-status' + (mode ? ' ' + mode : '');
+    }
+
+    function updateMicButton() {
+      var btn = document.getElementById('micBtn');
+      if (!recAvailable || micBlocked) {
+        btn.disabled = true;
+        if (micBlocked) {
+          setVoiceStatus('マイクが使えないため、テキスト入力をご利用ください', '');
+        } else {
+          setVoiceStatus('この環境では音声認識が使えません。テキスト入力をご利用ください', '');
+        }
+      } else {
+        btn.disabled = false;
+      }
+    }
+
+    function initSpeech() {
+      if (speechInited) return;
+      speechInited = true;
+
+      if (window.speechSynthesis) {
+        refreshVoices();
+        speechSynthesis.onvoiceschanged = refreshVoices;
+      }
+
+      var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (SR) {
+        recognition = new SR();
+        recognition.lang = 'ja-JP';
+        recognition.interimResults = true;
+        recognition.continuous = false;
+
+        recognition.onspeechstart = function () {
+          setVoiceStatus('🗣 聞き取り中…', 'listening');
+        };
+
+        recognition.onresult = function (e) {
+          var finalT = '', interim = '';
+          for (var i = e.resultIndex; i < e.results.length; i++) {
+            if (e.results[i].isFinal) finalT += e.results[i][0].transcript;
+            else interim += e.results[i][0].transcript;
+          }
+          var input = document.getElementById('replyInput');
+          input.value = finalT || interim;
+          autoGrow(input);
+        };
+
+        recognition.onend = function () {
+          listening = false;
+          document.getElementById('micBtn').classList.remove('listening');
+          var t = document.getElementById('replyInput').value.trim();
+          if (t) {
+            setVoiceStatus('送信中…', '');
+            sendReply();
+          } else {
+            setVoiceStatus('マイクボタンを押して話してください', '');
+          }
+        };
+
+        recognition.onerror = function (ev) {
+          listening = false;
+          document.getElementById('micBtn').classList.remove('listening');
+          if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
+            micBlocked = true;
+            updateMicButton();
+            showError('マイクの使用が許可されていません。ブラウザのマイク許可を確認するか、テキスト入力をご利用ください。');
+          } else if (ev.error === 'no-speech') {
+            setVoiceStatus('聞き取れませんでした。もう一度マイクを押してお試しください', '');
+          } else {
+            setVoiceStatus('マイクボタンを押して話してください', '');
+          }
+        };
+
+        recAvailable = true;
+      } else {
+        recAvailable = false;
+      }
+      updateMicButton();
+    }
+
+    function speak(text, onend) {
+      if (!ttsOn || !text) { if (onend) onend(); return; }
+      stopAudio();
+      if (ttsMode === 'cloud') { speakCloud(text, onend); return; }
+      if (!window.speechSynthesis) { if (onend) onend(); return; }
+      try {
+        var u = new SpeechSynthesisUtterance(text);
+        u.lang = 'ja-JP';
+        if (jaVoice) u.voice = jaVoice;
+        u.rate = speakRate;
+        u.pitch = 1.0;
+        setVoiceStatus('📞 相手が話しています…', 'speaking');
+        u.onend = function () {
+          setVoiceStatus('マイクボタンを押して話してください', '');
+          if (onend) onend();
+        };
+        u.onerror = function () {
+          setVoiceStatus('マイクボタンを押して話してください', '');
+          if (onend) onend();
+        };
+        speechSynthesis.speak(u);
+      } catch (e) {
+        setVoiceStatus('マイクボタンを押して話してください', '');
+        if (onend) onend();
+      }
+    }
+
+    function startListening() {
+      if (!recAvailable || micBlocked || busy || listening) return;
+      stopAudio();
+      try {
+        document.getElementById('replyInput').value = '';
+        recognition.start();
+        listening = true;
+        document.getElementById('micBtn').classList.add('listening');
+        setVoiceStatus('🎙 聞き取り中… 話し終えたら少しお待ちください', 'listening');
+      } catch (e) {
+        // 二重start等は無視
+        listening = false;
+      }
+    }
+
+    function stopListening() {
+      if (recognition && listening) recognition.stop();
+    }
+
+    function toggleMic() {
+      if (listening) stopListening();
+      else startListening();
+    }
+
+    function onTtsToggle(on) {
+      ttsOn = on;
+      if (!on) {
+        stopAudio();
+        setVoiceStatus('マイクボタンを押して話してください', '');
+      }
+    }
+
+    function cleanupVoice() {
+      stopAudio();
+      if (recognition && listening) {
+        try { recognition.abort(); } catch (e) {}
+      }
+      listening = false;
+      var btn = document.getElementById('micBtn');
+      if (btn) btn.classList.remove('listening');
+    }
+
+    // 読み上げ後、ハンズフリーなら自動で聞き取りを開始
+    function afterCallerSpoke() {
+      if (handsFree) startListening();
+    }
+
     // ============ 通話終了 → 採点 ============
     function endCall() {
       var staffTurns = conversationLog.filter(function (t) { return t.role === 'staff'; });
@@ -522,24 +945,25 @@
         showError('まだ応対していません。一度は応答してから終了してください。');
         return;
       }
+      cleanupVoice();
       showOverlay(true);
-      google.script.run
-        .withSuccessHandler(function (result) {
+      callServer('score', { scenarioId: currentScenario.id, log: conversationLog },
+        function (result) {
           showOverlay(false);
           renderResult(result);
           show('screen-result');
-        })
-        .withFailureHandler(function (err) {
+        },
+        function (err) {
           showOverlay(false);
           showError('採点に失敗しました: ' + err.message);
-        })
-        .scoreRoleplay(currentScenario.id, conversationLog);
+        });
     }
 
     function confirmLeaveRoleplay() {
       if (conversationLog.filter(function (t) { return t.role === 'staff'; }).length > 0) {
         if (!confirm('ロープレを中断してシナリオ選択に戻りますか？（採点されません）')) return;
       }
+      cleanupVoice();
       goScenarioList(currentScenario.difficulty);
     }
 
