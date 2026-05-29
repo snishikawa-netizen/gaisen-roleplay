@@ -288,7 +288,7 @@
     <header class="appbar">
       <span class="logo">aicorpo</span>
       <span class="sub">外線対応ロープレ</span>
-      <span class="sub" style="margin-left:auto;font-size:11px;opacity:.5">v1.4</span>
+      <span class="sub" style="margin-left:auto;font-size:11px;opacity:.5">v1.5</span>
     </header>
 
     <div id="errorBanner" class="error-banner"></div>
@@ -338,7 +338,7 @@
           <label>🗣 声:
             <select id="voiceSelect" onchange="onVoiceChange(this.value)" style="max-width:240px;"></select>
           </label>
-          <span style="font-size:11px;color:var(--muted);width:100%;text-align:center;">※ Gemini音声は約8回/分まで（超えると自動で端末音声・約90秒後に復帰）</span>
+          <span style="font-size:11px;color:var(--muted);width:100%;text-align:center;">※ Gemini音声は無料枠が約10回/分。超えた場合のみ約90秒、端末音声になります</span>
           <label>速さ:
             <input type="range" id="rateSlider" min="0.7" max="1.3" step="0.05" value="1" onchange="onRateChange(this.value)">
           </label>
@@ -407,11 +407,7 @@
     var cloudTtsCooldownUntil = 0; // 429後にクラウドTTSを一時休止する期限（ms）
     var ttsWaitTimer = null;       // TTS待機用タイマー（画面遷移時に解除）
     var TTS_COOLDOWN_KEY = 'roleplay_tts_cooldown_until';
-    var TTS_USE_TIMES_KEY = 'roleplay_tts_use_times';
-    var TTS_BUDGET_MAX = 8;          // 無料枠10回/分の手前で止める
-    var TTS_BUDGET_WINDOW_MS = 60000;
     var TTS_COOLDOWN_MIN_MS = 90000; // 429後は最低90秒はクラウドTTSを呼ばない
-    var ttsCloudUseTimes = [];       // 直近のクラウドTTS成功時刻
     var ttsStatusTicker = null;
 
     // Gemini のプリセットボイス（自然・端末非依存）
@@ -500,7 +496,8 @@
         return;
       }
       loadTtsCooldown();
-      loadTtsBudget();
+      // 旧バージョンのクライアント側回数制限データを削除
+      try { sessionStorage.removeItem('roleplay_tts_use_times'); } catch (e) {}
       if (isCloudTtsOnCooldown()) startTtsStatusTicker();
       // 音声合成ボイスの早期ウォームアップ（非同期で読み込まれるため）
       if (window.speechSynthesis) {
@@ -871,52 +868,6 @@
       try { sessionStorage.removeItem(TTS_COOLDOWN_KEY); } catch (e) {}
     }
 
-    function loadTtsBudget() {
-      try {
-        var raw = sessionStorage.getItem(TTS_USE_TIMES_KEY);
-        if (raw) {
-          var arr = JSON.parse(raw);
-          if (Array.isArray(arr)) ttsCloudUseTimes = arr;
-        }
-      } catch (e) {}
-      pruneTtsCloudUseTimes();
-    }
-
-    function saveTtsBudget() {
-      try {
-        sessionStorage.setItem(TTS_USE_TIMES_KEY, JSON.stringify(ttsCloudUseTimes));
-      } catch (e) {}
-    }
-
-    function pruneTtsCloudUseTimes() {
-      var now = Date.now();
-      ttsCloudUseTimes = ttsCloudUseTimes.filter(function (t) { return now - t < TTS_BUDGET_WINDOW_MS; });
-      saveTtsBudget();
-    }
-
-    function cloudTtsBudgetRemaining() {
-      pruneTtsCloudUseTimes();
-      return Math.max(0, TTS_BUDGET_MAX - ttsCloudUseTimes.length);
-    }
-
-    function canUseCloudTts() {
-      return !isCloudTtsOnCooldown() && cloudTtsBudgetRemaining() > 0;
-    }
-
-    function recordCloudTtsUse() {
-      ttsCloudUseTimes.push(Date.now());
-      pruneTtsCloudUseTimes();
-    }
-
-    /** 429後はAPIを叩かず端末音声専用にする */
-    function markTtsQuotaExhausted(retryMs) {
-      setCloudTtsCooldown(retryMs);
-      var now = Date.now();
-      ttsCloudUseTimes = [];
-      for (var i = 0; i < TTS_BUDGET_MAX; i++) ttsCloudUseTimes.push(now);
-      saveTtsBudget();
-    }
-
     function stopTtsStatusTicker() {
       if (ttsStatusTicker) {
         clearInterval(ttsStatusTicker);
@@ -1011,7 +962,7 @@
         playCloudAudio(ttsCache[key], onend);
         return;
       }
-      if (!canUseCloudTts()) {
+      if (isCloudTtsOnCooldown()) {
         speakLocalForTtsLimit(text, onend);
         return;
       }
@@ -1024,7 +975,6 @@
             return;
           }
           clearCloudTtsCooldown();
-          recordCloudTtsUse();
           ttsCache[key] = { audio: res.audio, mimeType: res.mimeType };
           playCloudAudio(res, onend);
         },
@@ -1034,7 +984,7 @@
           clearTtsWait();
           // 枠超過時はAPIを叩かず端末音声で続行（新シナリオ開始で再429にならないようクールダウンを維持）
           if (isTtsQuotaError(msg)) {
-            markTtsQuotaExhausted(retryMs);
+            setCloudTtsCooldown(retryMs);
             speakLocalForTtsLimit(text, onend);
             return;
           }
