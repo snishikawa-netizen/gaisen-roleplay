@@ -75,16 +75,13 @@ function getScenarios() {
   var all = getAllScenarios();
   var grouped = { beginner: [], intermediate: [], advanced: [] };
   all.forEach(function (s) {
-    // フロントには採点に不要な personality は渡さない（ネタバレ防止）
+    // フロントには personality・架電者の実名/社名は渡さない（ロープレのリアリティのため）
     var view = {
       id: s.id,
       difficulty: s.difficulty,
       title: s.title,
-      caller_name: s.caller_name,
-      company: s.company,
-      position: s.position,
-      purpose: s.purpose,
-      first_message: s.first_message
+      first_message: s.first_message,
+      identifies_on_opening: s.identifies_on_opening === true
     };
     if (grouped[s.difficulty]) {
       grouped[s.difficulty].push(view);
