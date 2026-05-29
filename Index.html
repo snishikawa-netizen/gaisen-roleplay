@@ -405,6 +405,8 @@
     var ttsCache = {};             // 同一セリフの再生成を避ける（key: voice::text）
     var cloudTtsCooldownUntil = 0; // 429後にクラウドTTSを一時休止する期限（ms）
     var ttsWaitTimer = null;       // TTS待機用タイマー（画面遷移時に解除）
+    var ttsQuotaWarnedUntil = 0;   // 枠超過バナーを出した期限（同じ枠内で繰り返し表示しない）
+    var TTS_COOLDOWN_KEY = 'roleplay_tts_cooldown_until';
 
     // Gemini のプリセットボイス（自然・端末非依存）
     var GEMINI_VOICES = [
@@ -484,6 +486,7 @@
         showError('APIのURL（API_URL）が設定されていません。');
         return;
       }
+      loadTtsCooldown();
       // 音声合成ボイスの早期ウォームアップ（非同期で読み込まれるため）
       if (window.speechSynthesis) {
         refreshVoices();
@@ -539,8 +542,8 @@
       if (!currentScenario) { showError('シナリオが見つかりません。'); return; }
       conversationLog = [];
       ttsCache = {};
-      cloudTtsCooldownUntil = 0;
       clearTtsWait();
+      // cloudTtsCooldownUntil はリセットしない（待ったあと新シナリオで再び429になるのを防ぐ）
 
       // 架電者情報（社名・氏名は非表示＝実際の外線同様）
       var s = currentScenario;
@@ -796,6 +799,55 @@
       }
     }
 
+    function loadTtsCooldown() {
+      try {
+        var v = parseInt(sessionStorage.getItem(TTS_COOLDOWN_KEY), 10);
+        if (v && v > Date.now()) cloudTtsCooldownUntil = v;
+      } catch (e) {}
+    }
+
+    function saveTtsCooldown() {
+      try {
+        if (cloudTtsCooldownUntil > Date.now()) {
+          sessionStorage.setItem(TTS_COOLDOWN_KEY, String(cloudTtsCooldownUntil));
+        } else {
+          sessionStorage.removeItem(TTS_COOLDOWN_KEY);
+        }
+      } catch (e) {}
+    }
+
+    function ttsCooldownRemainingSec() {
+      if (Date.now() >= cloudTtsCooldownUntil) return 0;
+      return Math.ceil((cloudTtsCooldownUntil - Date.now()) / 1000);
+    }
+
+    function isCloudTtsOnCooldown() {
+      return Date.now() < cloudTtsCooldownUntil;
+    }
+
+    function setCloudTtsCooldown(retryMs) {
+      // APIの retryDelay と 1分枠のどちらか長い方で待つ（54秒待っても枠が残ることがある）
+      var waitMs = Math.max(retryMs || 0, 60000);
+      cloudTtsCooldownUntil = Date.now() + waitMs;
+      saveTtsCooldown();
+    }
+
+    function clearCloudTtsCooldown() {
+      cloudTtsCooldownUntil = 0;
+      ttsQuotaWarnedUntil = 0;
+      try { sessionStorage.removeItem(TTS_COOLDOWN_KEY); } catch (e) {}
+    }
+
+    function maybeWarnTtsQuota() {
+      if (Date.now() < ttsQuotaWarnedUntil) return;
+      var sec = ttsCooldownRemainingSec();
+      ttsQuotaWarnedUntil = cloudTtsCooldownUntil;
+      showError(
+        'Gemini音声の無料枠（約10回/分）に達しました。約' + sec + '秒間は端末音声になります（シナリオを変えても同じです）。',
+        false
+      );
+    }
+
     function playCloudAudio(res, onend) {
       try {
         var audio = pcmBase64ToAudio(res.audio, parseSampleRate(res.mimeType));
@@ -855,7 +907,9 @@
         playCloudAudio(ttsCache[key], onend);
         return;
       }
-      if (Date.now() < cloudTtsCooldownUntil) {
+      if (isCloudTtsOnCooldown()) {
+        var left = ttsCooldownRemainingSec();
+        setVoiceStatus('📞 端末音声で再生（Geminiはあと約' + left + '秒で復帰）', 'speaking');
         speakLocalOnce(text, onend);
         return;
       }
@@ -867,7 +921,7 @@
             speakLocalOnce(text, onend);
             return;
           }
-          cloudTtsCooldownUntil = 0;
+          clearCloudTtsCooldown();
           ttsCache[key] = { audio: res.audio, mimeType: res.mimeType };
           playCloudAudio(res, onend);
         },
@@ -875,14 +929,10 @@
           var msg = err.message || String(err);
           var retryMs = parseTtsRetryMs(msg);
           clearTtsWait();
-          // 枠超過時は長時間待たない（36秒待ちでロープレが止まるのを防ぐ）
+          // 枠超過時はAPIを叩かず端末音声で続行（新シナリオ開始で再429にならないようクールダウンを維持）
           if (isTtsQuotaError(msg)) {
-            cloudTtsCooldownUntil = Date.now() + (retryMs || 60000);
-            var waitSec = Math.ceil((retryMs || 60000) / 1000);
-            showError(
-              'Gemini音声の無料枠（約10回/分）に達しました。約' + waitSec + '秒後に自然な音声に戻ります。今回は端末音声で再生します。',
-              false
-            );
+            setCloudTtsCooldown(retryMs);
+            maybeWarnTtsQuota();
             speakLocalOnce(text, onend);
             return;
           }
