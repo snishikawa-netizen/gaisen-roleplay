@@ -288,6 +288,7 @@
     <header class="appbar">
       <span class="logo">aicorpo</span>
       <span class="sub">外線対応ロープレ</span>
+      <span class="sub" style="margin-left:auto;font-size:11px;opacity:.5">v1.3</span>
     </header>
 
     <div id="errorBanner" class="error-banner"></div>
@@ -337,7 +338,7 @@
           <label>🗣 声:
             <select id="voiceSelect" onchange="onVoiceChange(this.value)" style="max-width:240px;"></select>
           </label>
-          <span style="font-size:11px;color:var(--muted);width:100%;text-align:center;">※ Gemini音声は無料枠が約10回/分です。超えると一時的に端末音声になります</span>
+          <span style="font-size:11px;color:var(--muted);width:100%;text-align:center;">※ Gemini音声は約8回/分まで（超えると自動で端末音声・約90秒後に復帰）</span>
           <label>速さ:
             <input type="range" id="rateSlider" min="0.7" max="1.3" step="0.05" value="1" onchange="onRateChange(this.value)">
           </label>
@@ -405,8 +406,13 @@
     var ttsCache = {};             // 同一セリフの再生成を避ける（key: voice::text）
     var cloudTtsCooldownUntil = 0; // 429後にクラウドTTSを一時休止する期限（ms）
     var ttsWaitTimer = null;       // TTS待機用タイマー（画面遷移時に解除）
-    var ttsQuotaWarnedUntil = 0;   // 枠超過バナーを出した期限（同じ枠内で繰り返し表示しない）
     var TTS_COOLDOWN_KEY = 'roleplay_tts_cooldown_until';
+    var TTS_USE_TIMES_KEY = 'roleplay_tts_use_times';
+    var TTS_BUDGET_MAX = 8;          // 無料枠10回/分の手前で止める
+    var TTS_BUDGET_WINDOW_MS = 60000;
+    var TTS_COOLDOWN_MIN_MS = 90000; // 429後は最低90秒はクラウドTTSを呼ばない
+    var ttsCloudUseTimes = [];       // 直近のクラウドTTS成功時刻
+    var ttsStatusTicker = null;
 
     // Gemini のプリセットボイス（自然・端末非依存）
     var GEMINI_VOICES = [
@@ -439,6 +445,13 @@
       b.classList.add('show');
       if (_errTimer) clearTimeout(_errTimer);
       if (!persist) _errTimer = setTimeout(function () { b.classList.remove('show'); }, 6000);
+    }
+
+    function dismissError() {
+      var b = document.getElementById('errorBanner');
+      b.classList.remove('show');
+      b.textContent = '';
+      if (_errTimer) { clearTimeout(_errTimer); _errTimer = null; }
     }
 
     // ============ サーバ通信（GAS内=google.script.run / 外部=fetch） ============
@@ -487,6 +500,8 @@
         return;
       }
       loadTtsCooldown();
+      loadTtsBudget();
+      if (isCloudTtsOnCooldown()) startTtsStatusTicker();
       // 音声合成ボイスの早期ウォームアップ（非同期で読み込まれるため）
       if (window.speechSynthesis) {
         refreshVoices();
@@ -543,6 +558,7 @@
       conversationLog = [];
       ttsCache = {};
       clearTtsWait();
+      dismissError();
       // cloudTtsCooldownUntil はリセットしない（待ったあと新シナリオで再び429になるのを防ぐ）
 
       // 架電者情報（社名・氏名は非表示＝実際の外線同様）
@@ -826,26 +842,97 @@
     }
 
     function setCloudTtsCooldown(retryMs) {
-      // APIの retryDelay と 1分枠のどちらか長い方で待つ（54秒待っても枠が残ることがある）
-      var waitMs = Math.max(retryMs || 0, 60000);
+      var waitMs = Math.max(retryMs || 0, TTS_COOLDOWN_MIN_MS);
       cloudTtsCooldownUntil = Date.now() + waitMs;
       saveTtsCooldown();
+      startTtsStatusTicker();
     }
 
     function clearCloudTtsCooldown() {
       cloudTtsCooldownUntil = 0;
-      ttsQuotaWarnedUntil = 0;
+      stopTtsStatusTicker();
       try { sessionStorage.removeItem(TTS_COOLDOWN_KEY); } catch (e) {}
     }
 
-    function maybeWarnTtsQuota() {
-      if (Date.now() < ttsQuotaWarnedUntil) return;
-      var sec = ttsCooldownRemainingSec();
-      ttsQuotaWarnedUntil = cloudTtsCooldownUntil;
-      showError(
-        'Gemini音声の無料枠（約10回/分）に達しました。約' + sec + '秒間は端末音声になります（シナリオを変えても同じです）。',
-        false
-      );
+    function loadTtsBudget() {
+      try {
+        var raw = sessionStorage.getItem(TTS_USE_TIMES_KEY);
+        if (raw) {
+          var arr = JSON.parse(raw);
+          if (Array.isArray(arr)) ttsCloudUseTimes = arr;
+        }
+      } catch (e) {}
+      pruneTtsCloudUseTimes();
+    }
+
+    function saveTtsBudget() {
+      try {
+        sessionStorage.setItem(TTS_USE_TIMES_KEY, JSON.stringify(ttsCloudUseTimes));
+      } catch (e) {}
+    }
+
+    function pruneTtsCloudUseTimes() {
+      var now = Date.now();
+      ttsCloudUseTimes = ttsCloudUseTimes.filter(function (t) { return now - t < TTS_BUDGET_WINDOW_MS; });
+      saveTtsBudget();
+    }
+
+    function cloudTtsBudgetRemaining() {
+      pruneTtsCloudUseTimes();
+      return Math.max(0, TTS_BUDGET_MAX - ttsCloudUseTimes.length);
+    }
+
+    function canUseCloudTts() {
+      return !isCloudTtsOnCooldown() && cloudTtsBudgetRemaining() > 0;
+    }
+
+    function recordCloudTtsUse() {
+      ttsCloudUseTimes.push(Date.now());
+      pruneTtsCloudUseTimes();
+    }
+
+    /** 429後はAPIを叩かず端末音声専用にする */
+    function markTtsQuotaExhausted(retryMs) {
+      setCloudTtsCooldown(retryMs);
+      var now = Date.now();
+      ttsCloudUseTimes = [];
+      for (var i = 0; i < TTS_BUDGET_MAX; i++) ttsCloudUseTimes.push(now);
+      saveTtsBudget();
+    }
+
+    function stopTtsStatusTicker() {
+      if (ttsStatusTicker) {
+        clearInterval(ttsStatusTicker);
+        ttsStatusTicker = null;
+      }
+    }
+
+    function startTtsStatusTicker() {
+      stopTtsStatusTicker();
+      if (!isCloudTtsOnCooldown()) return;
+      ttsStatusTicker = setInterval(function () {
+        if (!isCloudTtsOnCooldown()) {
+          stopTtsStatusTicker();
+          return;
+        }
+        var el = document.getElementById('voiceStatus');
+        if (!el) return;
+        var txt = el.textContent || '';
+        if (txt.indexOf('端末音声') >= 0 || txt.indexOf('Gemini') >= 0) {
+          var mode = el.className.indexOf('speaking') >= 0 ? 'speaking' : '';
+          setVoiceStatus('📞 端末音声（Geminiはあと約' + ttsCooldownRemainingSec() + '秒）', mode);
+        }
+      }, 1000);
+    }
+
+    function speakLocalForTtsLimit(text, onend) {
+      dismissError();
+      if (isCloudTtsOnCooldown()) {
+        setVoiceStatus('📞 端末音声（Geminiはあと約' + ttsCooldownRemainingSec() + '秒）', 'speaking');
+      } else {
+        setVoiceStatus('📞 端末音声で再生しています', 'speaking');
+      }
+      speakLocalOnce(text, onend);
     }
 
     function playCloudAudio(res, onend) {
@@ -907,10 +994,8 @@
         playCloudAudio(ttsCache[key], onend);
         return;
       }
-      if (isCloudTtsOnCooldown()) {
-        var left = ttsCooldownRemainingSec();
-        setVoiceStatus('📞 端末音声で再生（Geminiはあと約' + left + '秒で復帰）', 'speaking');
-        speakLocalOnce(text, onend);
+      if (!canUseCloudTts()) {
+        speakLocalForTtsLimit(text, onend);
         return;
       }
 
@@ -922,6 +1007,7 @@
             return;
           }
           clearCloudTtsCooldown();
+          recordCloudTtsUse();
           ttsCache[key] = { audio: res.audio, mimeType: res.mimeType };
           playCloudAudio(res, onend);
         },
@@ -931,9 +1017,8 @@
           clearTtsWait();
           // 枠超過時はAPIを叩かず端末音声で続行（新シナリオ開始で再429にならないようクールダウンを維持）
           if (isTtsQuotaError(msg)) {
-            setCloudTtsCooldown(retryMs);
-            maybeWarnTtsQuota();
-            speakLocalOnce(text, onend);
+            markTtsQuotaExhausted(retryMs);
+            speakLocalForTtsLimit(text, onend);
             return;
           }
           // その他のエラーは短い待機後に1回だけ再試行
@@ -1091,6 +1176,7 @@
     function cleanupVoice() {
       stopAudio();
       clearTtsWait();
+      stopTtsStatusTicker();
       clearSilenceTimer();
       if (recognition && listening) {
         try { recognition.abort(); } catch (e) {}
