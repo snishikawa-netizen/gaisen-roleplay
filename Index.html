@@ -288,7 +288,7 @@
     <header class="appbar">
       <span class="logo">aicorpo</span>
       <span class="sub">外線対応ロープレ</span>
-      <span class="sub" style="margin-left:auto;font-size:11px;opacity:.5">v1.3</span>
+      <span class="sub" style="margin-left:auto;font-size:11px;opacity:.5">v1.4</span>
     </header>
 
     <div id="errorBanner" class="error-banner"></div>
@@ -584,6 +584,7 @@
       show('screen-roleplay');
 
       initSpeech();
+      applyScenarioVoice(s.voice || 'Kore');
 
       // 第一声
       conversationLog.push({ role: 'caller', text: s.first_message });
@@ -726,7 +727,21 @@
         : (jaVoice ? 'local:' + jaVoice.name : 'gemini:' + cloudVoice);
     }
 
-    function applyVoiceChoice(value, silent) {
+    function isValidGeminiVoice(id) {
+      for (var i = 0; i < GEMINI_VOICES.length; i++) {
+        if (GEMINI_VOICES[i].id === id) return true;
+      }
+      return false;
+    }
+
+    /** シナリオ開始時：架電者に合わせた声を適用（localStorage は上書きしない） */
+    function applyScenarioVoice(voiceId) {
+      if (!isValidGeminiVoice(voiceId)) voiceId = 'Kore';
+      applyVoiceChoice('gemini:' + voiceId, true, false);
+      populateVoiceSelect();
+    }
+
+    function applyVoiceChoice(value, silent, persist) {
       if (value.indexOf('gemini:') === 0) {
         ttsMode = 'cloud';
         cloudVoice = value.slice('gemini:'.length);
@@ -735,7 +750,9 @@
         var name = value.slice('local:'.length);
         jaVoice = allJaVoices.filter(function (v) { return v.name === name; })[0] || null;
       }
-      try { localStorage.setItem('roleplay_voice', value); } catch (e) {}
+      if (persist !== false) {
+        try { localStorage.setItem('roleplay_voice', value); } catch (e) {}
+      }
       if (!silent) {
         // ボイス切替の試聴でTTS枠を消費しない（無料枠は約10回/分）
         if (ttsMode === 'cloud') {

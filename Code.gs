@@ -81,7 +81,8 @@ function getScenarios() {
       difficulty: s.difficulty,
       title: s.title,
       first_message: s.first_message,
-      identifies_on_opening: s.identifies_on_opening === true
+      identifies_on_opening: s.identifies_on_opening === true,
+      voice: s.voice || DEFAULT_SCENARIO_VOICE
     };
     if (grouped[s.difficulty]) {
       grouped[s.difficulty].push(view);
