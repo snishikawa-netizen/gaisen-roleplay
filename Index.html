@@ -404,6 +404,7 @@
     var silenceTimer = null;       // 無音検出タイマー（ハンズフリー自動送信用）
     var ttsCache = {};             // 同一セリフの再生成を避ける（key: voice::text）
     var cloudTtsCooldownUntil = 0; // 429後にクラウドTTSを一時休止する期限（ms）
+    var ttsWaitTimer = null;       // TTS待機用タイマー（画面遷移時に解除）
 
     // Gemini のプリセットボイス（自然・端末非依存）
     var GEMINI_VOICES = [
@@ -539,6 +540,7 @@
       conversationLog = [];
       ttsCache = {};
       cloudTtsCooldownUntil = 0;
+      clearTtsWait();
 
       // 架電者情報（社名・氏名は非表示＝実際の外線同様）
       var s = currentScenario;
@@ -779,12 +781,19 @@
     /** Gemini API の retryDelay（秒）をエラーメッセージから抽出 */
     function parseTtsRetryMs(msg) {
       if (!msg) return 0;
-      var m = /"retryDelay"\s*:\s*"(\d+)s?"/i.exec(msg);
-      if (m) return parseInt(m[1], 10) * 1000;
+      var m = /"retryDelay"\s*:\s*"([\d.]+)s?"/i.exec(msg);
+      if (m) return Math.ceil(parseFloat(m[1]) * 1000);
       m = /retry in ([\d.]+)s/i.exec(msg);
       if (m) return Math.ceil(parseFloat(m[1]) * 1000);
-      if (isTtsQuotaError(msg)) return 45000;
+      if (isTtsQuotaError(msg)) return 60000;
       return 0;
+    }
+
+    function clearTtsWait() {
+      if (ttsWaitTimer) {
+        clearTimeout(ttsWaitTimer);
+        ttsWaitTimer = null;
+      }
     }
 
     function playCloudAudio(res, onend) {
@@ -865,21 +874,28 @@
         function (err) {
           var msg = err.message || String(err);
           var retryMs = parseTtsRetryMs(msg);
-          if (isTtsQuotaError(msg) && attempt < 2 && retryMs > 0) {
-            var waitSec = Math.ceil(retryMs / 1000);
-            setVoiceStatus('🔄 音声枠の待機中… あと約' + waitSec + '秒', 'speaking');
-            setTimeout(function () { speakCloud(text, onend, attempt + 1); }, retryMs + 800);
-            return;
-          }
+          clearTtsWait();
+          // 枠超過時は長時間待たない（36秒待ちでロープレが止まるのを防ぐ）
           if (isTtsQuotaError(msg)) {
             cloudTtsCooldownUntil = Date.now() + (retryMs || 60000);
+            var waitSec = Math.ceil((retryMs || 60000) / 1000);
             showError(
-              'Gemini音声の無料枠（約10回/分）に達しました。約1分後に自然な音声に戻ります。今回のみ端末音声で再生します。',
+              'Gemini音声の無料枠（約10回/分）に達しました。約' + waitSec + '秒後に自然な音声に戻ります。今回は端末音声で再生します。',
               false
             );
-          } else {
-            showError('音声生成に失敗しました。この発話のみ端末音声で再生します。', false);
+            speakLocalOnce(text, onend);
+            return;
           }
+          // その他のエラーは短い待機後に1回だけ再試行
+          if (attempt < 1) {
+            setVoiceStatus('🔄 音声を再試行中…', 'speaking');
+            ttsWaitTimer = setTimeout(function () {
+              ttsWaitTimer = null;
+              speakCloud(text, onend, attempt + 1);
+            }, 2000);
+            return;
+          }
+          showError('音声生成に失敗しました。この発話のみ端末音声で再生します。', false);
           speakLocalOnce(text, onend);
         });
     }
@@ -1024,6 +1040,7 @@
 
     function cleanupVoice() {
       stopAudio();
+      clearTtsWait();
       clearSilenceTimer();
       if (recognition && listening) {
         try { recognition.abort(); } catch (e) {}
