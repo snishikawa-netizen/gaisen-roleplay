@@ -392,7 +392,9 @@
     var recognition = null;        // SpeechRecognition インスタンス
     var recAvailable = false;      // 音声認識が使えるか
     var micBlocked = false;        // マイクがブロックされたか
-    var listening = false;         // 聞き取り中か
+    var listening = false;         // 認識エンジンが実際に動作中か
+    var wantListening = false;      // ユーザー/アプリが聞き取りを続けたい意図か（Chromeの勝手なonend対策）
+    var aborting = false;           // cleanupVoice等で中断中か（onendで送信させない）
     var ttsOn = true;              // 読み上げ ON/OFF
     var handsFree = false;         // ハンズフリー（読み上げ後に自動で聞き取り）
     var jaVoice = null;            // 選択中の端末ボイス（local時）
@@ -407,7 +409,9 @@
     var cloudTtsCooldownUntil = 0; // 429後にクラウドTTSを一時休止する期限（ms）
     var ttsWaitTimer = null;       // TTS待機用タイマー（画面遷移時に解除）
     var TTS_COOLDOWN_KEY = 'roleplay_tts_cooldown_until';
-    var TTS_COOLDOWN_MIN_MS = 90000; // 429後は最低90秒はクラウドTTSを呼ばない
+    var TTS_COOLDOWN_MIN_MS = 60000; // 429後は最低60秒クラウドTTSを休止（毎分枠は約60秒で回復）
+    var TTS_DAILY_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 日次枠超過は当日回復しないため長め（端末音声で続行）
+    var ttsDailyExhausted = false; // 本日の無料枠を使い切ったか
     var ttsStatusTicker = null;
 
     // Gemini のプリセットボイス（自然・端末非依存）
@@ -677,6 +681,25 @@
     }
 
     // ============ 音声（読み上げ / 聞き取り） ============
+    // 端末音声の自然さスコア（クラウド枠超過時のロボ声対策で、最も自然な声を選ぶ）
+    function scoreLocalVoice(v) {
+      var n = (v.name || '').toLowerCase();
+      var s = 0;
+      if (/google/.test(n)) s += 50;            // Google 日本語（Chromeで安定＆比較的自然）
+      if (/natural|neural/.test(n)) s += 45;     // Microsoft ... Online (Natural) 系（Edgeで非常に自然）
+      if (/online/.test(n)) s += 20;
+      if (v.localService === false) s += 15;     // オンライン合成は概ね高品質
+      if (/haruka|ichiro|sayaka/.test(n) && v.localService) s -= 20; // 旧来のロボ声寄り
+      return s;
+    }
+    // 端末音声の中から最も自然なものを選ぶ
+    function pickBestLocalVoice() {
+      if (!allJaVoices.length) return null;
+      return allJaVoices.slice().sort(function (a, b) {
+        return scoreLocalVoice(b) - scoreLocalVoice(a);
+      })[0];
+    }
+
     function refreshVoices() {
       if (window.speechSynthesis) {
         var voices = speechSynthesis.getVoices() || [];
@@ -684,6 +707,8 @@
           return v.lang && (v.lang === 'ja-JP' || v.lang.toLowerCase().indexOf('ja') === 0);
         });
       }
+      // クラウド枠超過時のフォールバック用に、最も自然な端末音声を既定にしておく
+      if (!jaVoice) jaVoice = pickBestLocalVoice();
       // 保存済みの選択を復元（なければ Gemini Kore を既定）
       var saved = null;
       try { saved = localStorage.getItem('roleplay_voice'); } catch (e) {}
@@ -811,6 +836,11 @@
       return /429|RESOURCE_EXHAUSTED|quota exceeded/i.test(msg || '');
     }
 
+    // 「1日あたり」の枠超過か（毎分枠と違い、待っても当日は回復しない）
+    function isTtsDailyQuotaError(msg) {
+      return /PerDay|RequestsPerDay/i.test(msg || '');
+    }
+
     /** Gemini API の retryDelay（秒）をエラーメッセージから抽出 */
     function parseTtsRetryMs(msg) {
       if (!msg) return 0;
@@ -877,6 +907,8 @@
 
     function startTtsStatusTicker() {
       stopTtsStatusTicker();
+      // 日次枠超過時は秒読みに意味がない（当日回復しない）のでカウントダウンしない
+      if (ttsDailyExhausted) return;
       if (!isCloudTtsOnCooldown()) return;
       ttsStatusTicker = setInterval(function () {
         if (!isCloudTtsOnCooldown()) {
@@ -895,7 +927,9 @@
 
     function speakLocalForTtsLimit(text, onend) {
       dismissError();
-      if (isCloudTtsOnCooldown()) {
+      if (ttsDailyExhausted) {
+        setVoiceStatus('📞 端末音声で再生中（本日のGemini音声枠は超過）', 'speaking');
+      } else if (isCloudTtsOnCooldown()) {
         setVoiceStatus('📞 端末音声（Geminiはあと約' + ttsCooldownRemainingSec() + '秒）', 'speaking');
       } else {
         setVoiceStatus('📞 端末音声で再生しています', 'speaking');
@@ -931,7 +965,7 @@
     /** 端末音声で1回だけ再生（ttsMode は cloud のまま維持） */
     function speakLocalOnce(text, onend) {
       if (!window.speechSynthesis) { if (onend) onend(); return; }
-      if (!jaVoice && allJaVoices.length) jaVoice = allJaVoices[0];
+      if (!jaVoice && allJaVoices.length) jaVoice = pickBestLocalVoice();
       try {
         var u = new SpeechSynthesisUtterance(text);
         u.lang = 'ja-JP';
@@ -974,6 +1008,7 @@
             speakLocalOnce(text, onend);
             return;
           }
+          ttsDailyExhausted = false;
           clearCloudTtsCooldown();
           ttsCache[key] = { audio: res.audio, mimeType: res.mimeType };
           playCloudAudio(res, onend);
@@ -984,7 +1019,14 @@
           clearTtsWait();
           // 枠超過時はAPIを叩かず端末音声で続行（新シナリオ開始で再429にならないようクールダウンを維持）
           if (isTtsQuotaError(msg)) {
-            setCloudTtsCooldown(retryMs);
+            if (isTtsDailyQuotaError(msg)) {
+              // 日次枠は待っても当日は回復しない。長めに休止して無駄打ちを止め、明示する。
+              ttsDailyExhausted = true;
+              setCloudTtsCooldown(TTS_DAILY_COOLDOWN_MS);
+              showError('本日のGemini音声（自然音声）の無料枠を使い切りました。以降は端末音声で続行します。翌日リセットされます。', false);
+            } else {
+              setCloudTtsCooldown(retryMs);
+            }
             speakLocalForTtsLimit(text, onend);
             return;
           }
@@ -1054,27 +1096,68 @@
 
         recognition.onend = function () {
           listening = false;
-          clearSilenceTimer();
           document.getElementById('micBtn').classList.remove('listening');
+
+          // cleanupVoice等による中断はここで打ち切る（送信もしない）
+          if (aborting) {
+            aborting = false;
+            clearSilenceTimer();
+            return;
+          }
+
+          // ユーザーはまだ話したいのに Chrome が無音で勝手に終了したケース。
+          // ここで送信してしまうと「マイクを押しても進まない／言い直し」になるため、
+          // 認識済みテキストを保持したまま聞き取りを再開する。
+          if (wantListening && !busy && recAvailable && !micBlocked) {
+            // 未確定のまま途切れた分も失わないよう、表示中テキストを確定分として引き継ぐ
+            finalTranscript = document.getElementById('replyInput').value;
+            try {
+              recognition.start();
+              listening = true;
+              document.getElementById('micBtn').classList.add('listening');
+              return;
+            } catch (e) {
+              // 直後の再startが弾かれたら少し待って1回だけ再試行
+              setTimeout(function () {
+                if (wantListening && !listening && !busy) {
+                  try {
+                    recognition.start();
+                    listening = true;
+                    document.getElementById('micBtn').classList.add('listening');
+                  } catch (e2) { /* 諦める。ユーザーがマイクを押せば再開できる */ }
+                }
+              }, 250);
+              return;
+            }
+          }
+
+          // ここに来るのは「ユーザーが送信のために停止した」とき（stopListening / 無音タイマー）
+          clearSilenceTimer();
           var t = (finalTranscript || document.getElementById('replyInput').value).trim();
           if (t) {
             setVoiceStatus('送信中…', '');
             sendReply();
           } else {
-            setVoiceStatus('マイクボタンを押して話してください', '');
+            setVoiceStatus(handsFree ? '🎙 お話しください' : 'マイクボタンを押して話してください', '');
           }
         };
 
         recognition.onerror = function (ev) {
-          listening = false;
-          document.getElementById('micBtn').classList.remove('listening');
           if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
+            // マイク不許可は致命的。再開ループを止める。
+            wantListening = false;
             micBlocked = true;
+            listening = false;
+            document.getElementById('micBtn').classList.remove('listening');
             updateMicButton();
             showError('マイクの使用が許可されていません。ブラウザのマイク許可を確認するか、テキスト入力をご利用ください。');
-          } else if (ev.error === 'no-speech') {
-            setVoiceStatus('聞き取れませんでした。もう一度マイクを押してお試しください', '');
+          } else if (ev.error === 'no-speech' || ev.error === 'aborted') {
+            // 無音タイムアウト/中断は onend 側で処理（再開 or 打ち切り）。ここでは何もしない。
           } else {
+            // その他のエラーは継続を諦める
+            wantListening = false;
+            listening = false;
+            document.getElementById('micBtn').classList.remove('listening');
             setVoiceStatus('マイクボタンを押して話してください', '');
           }
         };
@@ -1109,6 +1192,7 @@
       try {
         finalTranscript = '';
         document.getElementById('replyInput').value = '';
+        wantListening = true;
         recognition.start();
         listening = true;
         document.getElementById('micBtn').classList.add('listening');
@@ -1124,6 +1208,8 @@
     }
 
     function stopListening() {
+      // ユーザー意図としての停止（送信）。再開ループを止めてから stop する。
+      wantListening = false;
       if (recognition && listening) recognition.stop();
     }
 
@@ -1145,7 +1231,9 @@
       clearTtsWait();
       stopTtsStatusTicker();
       clearSilenceTimer();
+      wantListening = false;
       if (recognition && listening) {
+        aborting = true;               // onend で送信・再開させない
         try { recognition.abort(); } catch (e) {}
       }
       listening = false;

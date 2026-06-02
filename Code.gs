@@ -146,9 +146,11 @@ function scoreRoleplay(scenarioId, conversationLog) {
   var prompt = buildScoringPrompt(scenario, conversationLog || []);
   var contents = [{ role: 'user', parts: [{ text: prompt }] }];
 
+  // 採点JSONは5項目コメント＋良かった点＋改善例を含み長くなりがち。
+  // 2048だと途中で切れてパース失敗（採点エラー）になることがあるため余裕を持たせる。
   var raw = callGeminiAPI(contents, null, {
     temperature: 0.4,
-    maxOutputTokens: 2048,
+    maxOutputTokens: 4096,
     responseMimeType: 'application/json'
   });
   var result = parseScoringJson(raw);
@@ -222,6 +224,12 @@ function callGeminiAPI(contents, systemPrompt, options) {
 
   if (json.promptFeedback && json.promptFeedback.blockReason) {
     throw new Error('リクエストがブロックされました: ' + json.promptFeedback.blockReason);
+  }
+
+  // 出力がトークン上限で打ち切られた場合は、その旨を明示（JSONが途中で切れてパース失敗になるため）
+  var finish = json.candidates && json.candidates[0] && json.candidates[0].finishReason;
+  if (finish === 'MAX_TOKENS') {
+    throw new Error('Gemini 出力がトークン上限で打ち切られました（maxOutputTokens を増やしてください）: ' + text);
   }
 
   try {
