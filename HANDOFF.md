@@ -1,6 +1,6 @@
 # 引き継ぎ書（外線対応ロープレアプリ）
 
-最終更新: 2026-05-29 / 直近デプロイ: GAS @13・GitHub commit `3bce814`
+最終更新: 2026-06-02 / GitHub commit `4e978b1`（origin/main にpush済み）・GASデプロイ **@16**
 
 このドキュメントは、開発を **Cursor** で引き継ぐための申し送りです。
 **重要: 当初の仕様書（`gaisen_roleplay_spec.md`）から構成が大きく変わっています。** 必ず本書の「構成」を先に読んでください。
@@ -54,6 +54,19 @@
 | ローカル作業ディレクトリ | `C:\Users\s.nishikawa\Documents\アプリ\roleplay` |
 
 > GASアカウント: `s.nishikawa@aicorpo.com` / GitHubアカウント: `snishikawa-netizen`
+
+### 課金（Gemini API・2026-06-02 有料化）
+| 項目 | 値 |
+|---|---|
+| キーの所属プロジェクト | **gemini-roleplay**（`gemini-roleplay-497706`） |
+| 請求先アカウント（リンク済み） | `01D7B1-72BD67-DFC3E0` |
+| ティア | **有料 Tier 1**（月上限 $250） |
+| 支払い方式 | **前払い（プリペイド）**。Gemini APIは新規ユーザー前払いのみ（後払いはTier 3以降） |
+| クレジット購入 | https://aistudio.google.com/billing →「クレジットを購入」（最低 ¥2,000） |
+| 予算アラート | ¥500 / ¥900 / ¥1,000 でメール通知（請求先01D7B1に設定済み） |
+
+> **残高0でAPI停止＝実質ハードキャップ**。残高は `https://aistudio.google.com/billing` で確認・補充。
+> 補充の権限は「お支払いプロファイル（カード）」を持つ **`nishikawa0826@gmail.com`** 側にある（aicorpoは請求先の管理者だがカード編集不可）。
 
 ---
 
@@ -133,18 +146,19 @@ curl -s --http1.1 "$LOC"
 4. **gemini-2.5系の「思考」**: 既定で思考トークンを消費し、`maxOutputTokens` 内で**出力JSONが途中で切れる**。`callGeminiAPI` で `thinkingConfig.thinkingBudget=0` を指定。採点は `responseMimeType:'application/json'` + 出力上限2048で確実化。
 5. **callServer のペイロード**: fetchボディに全フィールドを載せること（過去に `text`/`voice` を送り忘れてTTSが毎回端末音声にフォールバックするバグがあった）。
 6. **Gemini TTSの音声**: `gemini-2.5-flash-preview-tts` が base64 の **PCM(L16/24kHz/mono)** を返す。`<audio>` は生PCMを再生できないので、フロントで**WAVヘッダを付けて再生**している（`pcmBase64ToAudio`）。
-6b. **Gemini TTSの無料枠**: `gemini-2.5-flash-preview-tts` は **約10回/分**（HTTP 429 `RESOURCE_EXHAUSTED`）。超えると端末音声に一時フォールバック（`ttsMode` は cloud のまま・約1分後に復帰）。ボイス切替の試聴はTTSを叩かない。同一セリフは `ttsCache` で再生成しない。
-7. **音声認識の途切れ**: `continuous=true`。手動はマイク再押下で送信、ハンズフリーは**無音2.5秒**で自動送信（`resetSilenceTimer`、秒数は調整可）。
+6b. **Gemini TTSの枠（重要・実測で判明）**: `gemini-2.5-flash-preview-tts` の無料枠で本当に効く制約は **毎分ではなく「1日10回（RequestsPerDayPerProjectPerModel）」**。だからロープレ1〜2回で枯渇し、待っても当日は戻らない（リセットは太平洋時間の翌日）。**Cloud無料トライアルのクレジット(¥47,819)はGemini APIには使えない**点に注意（対象外プロダクト）。→ **2026-06-02に有料Tier 1へ移行＋前払い¥2,000で恒久解決**（§3課金参照）。クライアントは枠超過時に端末音声へ自動フォールバック、`isTtsDailyQuotaError` で日次超過を検知すると長め休止＋「本日の枠超過」を明示。端末音声は `pickBestLocalVoice()` で最も自然な声を選択。同一セリフは `ttsCache` で再生成しない。
+7. **音声認識の途切れ／ターン未送信**: `continuous=true` でもChromeは無音で勝手に `onend` を発火する。放置すると「マイクを押しても進まない／言い直し」になるため、`wantListening`（聞き取り継続の意図）フラグで**意図しないonendは認識テキストを保持して自動再開**し、ユーザーの送信操作（`stopListening`）時のみ送信する。手動はマイク再押下で送信、ハンズフリーは**無音2.5秒**で自動送信（`resetSilenceTimer`、秒数は調整可）。中断は `cleanupVoice` が `aborting` を立てて送信・再開を抑止。
 8. **ファイル名の大小**: Windowsは大小区別なし。GitHub/GASは区別あり。ファイルは `Index.html`（大文字I）。Pagesのトップ `/` ではなく **`/Index.html`** でアクセスする点に注意（`index.html`小文字は作っていない）。
 
 ---
 
 ## 8. 既知の懸念・TODO（任意の改善余地）
 
-- [ ] **アクセス制限**: Pagesは公開・GASは匿名アクセス可のため、**URLを知る誰でもGeminiの無料枠を消費**できる。社内限定運用が前提。必要なら合言葉ゲート等を追加検討。
+- [ ] **アクセス制限（有料化で重要度UP）**: Pagesは公開・GASは匿名アクセス可のため、**URLを知る誰でも前払いクレジットを消費**できる。社内限定運用が前提。残高は前払い¥2,000で上限管理されるが、合言葉ゲート等の追加を検討する価値あり。
 - [ ] **README.md が旧構成のまま**（GAS単体前提の記述）。現構成（Pages+GAS API+音声）に更新するとよい。
 - [x] **架電者情報の非表示**: ロープレ中は「外線着信・発信者不明」。シナリオ一覧も社名/用件非表示。`identifies_on_opening` で名乗りあり/なしを分岐（採点で所属確認を評価）。
-- [x] **TTS 429対策**: 永久ロボ声化を廃止、リトライ・キャッシュ・一時フォールバック（§7の6b参照）。
+- [x] **TTSロボ声の恒久対策**: 原因は無料枠の日次10回上限。**有料Tier 1＋前払い¥2,000で解決**（§3課金・§7-6b）。残高補充はgmail側で（§3注記）。
+- [x] **マイク押下でターンが進まない**: ChromeのonEnd暴発が原因。`wantListening`で再開制御し送信時のみ送信（§7-7）。
 - [ ] git のコミット作者が自動値（`西川 新也 <s.nishikawa@local.aicorpo.com>`）。必要なら `git config user.name/email` を設定。
 - [ ] 音声生成のたびに1〜3秒の待ち（Gemini TTS）。気になる場合は短文化・プリフェッチ等を検討。
 - [ ] ハンズフリーの無音判定2.5秒は体感次第で調整（`Index.html` の `resetSilenceTimer`）。
@@ -166,8 +180,14 @@ curl -s --http1.1 "$LOC"
 
 ---
 
-## 10. 直近の状態
+## 10. 直近の状態（2026-06-02）
 
-- 動作確認済み: シナリオ取得・音声認識・AI応答（gemini-2.5-flash）・Gemini TTS再生・採点、すべて疎通。
-- 未 push の変更あり: 架電者情報非表示・名乗りシナリオ分岐・TTS429対策（`Index.html` / `Scenarios.gs` / `Prompt.gs` / `Code.gs`）。
-- 反映: フロントは `git push`、バックエンドは `clasp push -f` → `clasp deploy -i AKfycbx_...`（シナリオ・プロンプト変更のため**GASも必須**）。
+- 動作確認済み: シナリオ取得・音声認識・AI応答（gemini-2.5-flash）・Gemini TTS再生・採点、すべて疎通。**有料化後にTTSが連続成功することをAPI実測で確認**。
+- **GitHub: `origin/main` に最新コミット `4e978b1` までpush済み**（Pages反映済み）。**GASデプロイ @16 反映済み**。`memo.txt` は未追跡の作業メモ。
+- 今回の主な対応（2026-06-02・`4e978b1`）:
+  - 音声認識: ChromeのonEnd暴発で「マイクを押しても進まない／言い直し」を修正（`wantListening` で再開制御）。
+  - TTS: 日次枠超過(PerDay)の検知・明示、端末音声フォールバックを最も自然な声に、クールダウン90→60秒。
+  - 採点: `maxOutputTokens` 2048→4096、`MAX_TOKENS` 検出を追加。
+  - **Gemini APIを有料Tier 1へ移行＋前払い¥2,000**でロボ声を恒久解決（§3課金・§7-6b）。
+- 残タスク（任意）: §8参照（アクセス制限、README更新、残高補充の運用など）。
+- 採点エラーは一時的なGemini 503（過負荷）でも発生し得る。恒常的に出る場合のみ調査（トークン切れは§7-4で対策済み）。
