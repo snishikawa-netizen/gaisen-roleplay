@@ -11,3 +11,6 @@ Thumbs.db
 *.tmp
 _check.js
 .htmljs.js
+
+# 空のメモ
+memo.txt
